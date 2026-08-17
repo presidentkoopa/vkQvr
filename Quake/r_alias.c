@@ -494,6 +494,14 @@ void R_DrawAliasModel (cb_context_t *cbx, entity_t *e, int *aliaspolys)
 	//
 	paliashdr = (aliashdr_t *)Mod_Extradata_CheckSkin (e->model, skinnum);
 
+	// VR: apply the per-weapon offsets to the header actually being drawn.
+	// Mod_Extradata_CheckSkin can hand back a different aliashdr_t depending on
+	// skinnum and r_enhancedmodels, so modding a fixed skin at load time can
+	// silently miss the one the renderer uses. Re-deriving from original_scale
+	// each time makes this idempotent.
+	if (e == &cl.viewent && VR_XR_SessionRunning ())
+		VR_XR_ApplyWeaponModelMod (paliashdr, e->model->name);
+
 	qboolean alphatest = !!(e->model->flags & MF_HOLEY);
 
 	R_SetupAliasFrame (e, paliashdr, &lerpdata);

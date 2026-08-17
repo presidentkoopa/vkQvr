@@ -82,7 +82,7 @@ static qboolean xr_send_teleport = false;
 // forward moves both player and camera and you travel twice as far as you
 // walked. (quakevr vr.cpp:2691-2692)
 static vec3_t	xr_last_head_pos;
-static vec3_t	xr_roomscale_consumed;
+// (retired: the old room-scale accumulator -- see XR_UpdateRoomscale)
 static vec3_t	xr_roomscale_delta;
 static qboolean xr_head_pos_valid = false;
 
@@ -1248,10 +1248,20 @@ qboolean VR_XR_EyePose (float out_angles[3], float out_offset[3])
 	out_offset[1] = -pose->position.x * scale;
 	out_offset[2] = pose->position.y * scale;
 
-	// take back whatever room-scale walking has already been handed to the
-	// player as movement, or we would apply it twice
-	out_offset[0] -= xr_roomscale_consumed[0];
-	out_offset[1] -= xr_roomscale_consumed[1];
+	// Horizontal head position is deliberately discarded, leaving only the
+	// per-eye (IPD) offset. Physical walking reaches the world by moving the
+	// player entity through room-scale, so letting it move the camera as well
+	// would double-count it and let the view pass through walls.
+	//
+	// quakevr does this bluntly -- headPos.v[0] = 0; headPos.v[2] = 0; with the
+	// comment "these two lines are what keep the head position stable (attached
+	// to the player, instead of to the hmd)" (vr.cpp:2696-2697).
+	//
+	// It also retires the old consumed-movement accumulator, which grew without
+	// bound whenever the server clipped a requested move -- against a wall, on
+	// a ledge, when stuck -- and slid the whole rig away from the player.
+	out_offset[0] -= xr_last_head_pos[0];
+	out_offset[1] -= xr_last_head_pos[1];
 
 	// floor-relative height -> Quake's centre-of-box origin (quakevr vr.cpp:3516)
 	out_offset[2] += vr_floor_offset.value;
@@ -2541,10 +2551,10 @@ qboolean VR_XR_WeaponPose (const vec3_t player_origin, vec3_t out_origin, vec3_t
 	// placed at the hand, and where. Guessing at this from the headset has not
 	// been productive.
 
-	// same rebase the view uses: drop whatever room-scale walking already moved
-	// the player, so the gun does not drift away from them
-	local[0] = h->pos[0] - xr_roomscale_consumed[0] + vr_gun_offset_x.value;
-	local[1] = h->pos[1] - xr_roomscale_consumed[1] + vr_gun_offset_y.value;
+	// Head-relative in XY, absolute in Z -- same basis as the camera and the QC
+	// hand positions, so all three agree wherever the player stands.
+	local[0] = h->pos[0] - xr_last_head_pos[0] + vr_gun_offset_x.value;
+	local[1] = h->pos[1] - xr_last_head_pos[1] + vr_gun_offset_y.value;
 	local[2] = h->pos[2] + vr_gun_offset_z.value;
 
 	yaw = DEG2RAD (cl.viewangles[YAW]);
@@ -2729,8 +2739,10 @@ static void XR_UpdateRoomscale (void)
 		xr_roomscale_delta[1] = (head[1] - xr_last_head_pos[1]) * vr_roomscale_mult.value;
 		xr_roomscale_delta[2] = 0.0f;
 
-		xr_roomscale_consumed[0] += xr_roomscale_delta[0];
-		xr_roomscale_consumed[1] += xr_roomscale_delta[1];
+		// Nothing accumulates any more. The camera and hands are measured from
+		// the head rather than from the play-space origin, so the delta only
+		// ever needs to drive the player's movement -- there is no second copy
+		// of it to cancel out, and therefore nothing that can drift.
 	}
 
 	VectorCopy (head, xr_last_head_pos);
@@ -2983,7 +2995,7 @@ wherever they are physically standing now.
 */
 static void VR_XR_Recenter_f (void)
 {
-	xr_roomscale_consumed[0] = xr_roomscale_consumed[1] = xr_roomscale_consumed[2] = 0.0f;
+	// nothing to reset: room-scale no longer accumulates
 	xr_head_pos_valid = false;
 	Con_Printf ("vr_recenter: play space re-anchored\n");
 }
@@ -3073,8 +3085,12 @@ static void XR_HandToWorld (const vr_hand_t *h, const vec3_t player_origin, vec3
 	const float s = sinf (yaw), c = cosf (yaw);
 	vec3_t		local;
 
-	local[0] = h->pos[0] - xr_roomscale_consumed[0];
-	local[1] = h->pos[1] - xr_roomscale_consumed[1];
+	// Head-relative in XY, absolute in Z -- the same shape quakevr stores its
+	// controller positions in (vr.cpp:2760-2767). Measuring the hand from the
+	// head rather than from the play-space origin is what keeps it attached to
+	// the player no matter where they stand in the room.
+	local[0] = h->pos[0] - xr_last_head_pos[0];
+	local[1] = h->pos[1] - xr_last_head_pos[1];
 	local[2] = h->pos[2];
 
 	// same base as the camera and the gun -- no STAT_VIEWHEIGHT
@@ -3082,8 +3098,15 @@ static void XR_HandToWorld (const vr_hand_t *h, const vec3_t player_origin, vec3
 	out_pos[1] = player_origin[1] + local[0] * s + local[1] * c;
 	out_pos[2] = player_origin[2] + local[2];
 
+	// Identical rotation to the drawn weapon, gun pre-rotation included.
+	// quakevr uses one handrot for the visible gun, the aim direction and the
+	// QC (view.cpp:723, vr.cpp:2840, 2857); publishing a different one here
+	// would put holster geometry and muzzle direction out of step with what the
+	// player can see.
 	VectorCopy (h->angles, out_angles);
 	out_angles[YAW] += cl.viewangles[YAW];
+	out_angles[PITCH] -= vr_gunangle.value;
+	out_angles[YAW] += vr_gunyaw.value;
 
 	out_vel[0] = h->velocity[0] * c - h->velocity[1] * s;
 	out_vel[1] = h->velocity[0] * s + h->velocity[1] * c;

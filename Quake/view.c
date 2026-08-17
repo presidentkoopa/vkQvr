@@ -788,6 +788,14 @@ void V_CalcRefdef (void)
 			VectorCopy (vr_org, view->origin);
 			VectorCopy (vr_ang, view->angles);
 		}
+		else if (VR_XR_SessionRunning ())
+		{
+			// Tracking dropped this frame. Leaving the stock transform in place
+			// would fling the weapon to a point below the eye at body yaw and
+			// back again as soon as tracking returns; hiding it is far less
+			// jarring than watching it teleport.
+			view->model = NULL;
+		}
 	}
 
 	// johnfitz -- removed all gun position fudging code (was used to keep gun from getting covered by sbar)
