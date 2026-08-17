@@ -161,6 +161,12 @@ void VR_XR_Init (void)
 	Cvar_RegisterVariable (&vr_gunmodelscale);
 	Cvar_RegisterVariable (&vr_gunmodely);
 
+	// vkQuake ships gamma 0.9 / contrast 1.4, a brightened look tuned for a
+	// monitor. quakevr runs both at 1 (gl_vidsdl.cpp:150-152); applied to a
+	// headset, vkQuake's defaults lift the blacks and read as washed out.
+	Cvar_SetQuick (&vid_gamma, "1");
+	Cvar_SetQuick (&vid_contrast, "1");
+
 	Cmd_AddCommand ("vr_calibrate", VR_XR_Calibrate_f);
 	Cmd_AddCommand ("vr_recenter", VR_XR_Recenter_f);
 
