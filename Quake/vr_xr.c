@@ -41,8 +41,17 @@ static XrSystemId xr_system = XR_NULL_SYSTEM_ID;
 static void XR_DestroySession (void);
 static void XR_AcquireEyes (void);
 static void XR_UpdateRoomscale (void);
+static void XR_InitHandTracking (void);
 static void VR_XR_Calibrate_f (void);
 static void VR_XR_Recenter_f (void);
+
+// Finger tracking cvars, declared here because VR_XR_Init registers them well
+// before the finger-tracking section defines them. Defaults are quakevr's
+// (vr_cvars.cpp:173-187).
+cvar_t vr_finger_grip_bias = {"vr_finger_grip_bias", "0.0", CVAR_ARCHIVE};
+cvar_t vr_finger_auto_close_thumb = {"vr_finger_auto_close_thumb", "1", CVAR_ARCHIVE};
+cvar_t vr_finger_blending = {"vr_finger_blending", "1", CVAR_ARCHIVE};
+cvar_t vr_finger_blending_speed = {"vr_finger_blending_speed", "50", CVAR_ARCHIVE};
 
 // Room-scale bookkeeping. Head position in play space (Quake units) last frame,
 // the delta to hand to the movement command, and the running total already
@@ -134,7 +143,8 @@ void VR_XR_Init (void)
 	XrInstanceProperties	   instance_props;
 	uint32_t				   view_count = 0;
 	XrViewConfigurationView	   views[2];
-	const char				  *enabled_exts[1];
+	const char				  *enabled_exts[2];
+	uint32_t				   num_enabled_exts = 0;
 	PFN_xrGetVulkanGraphicsRequirements2KHR pfn_get_vk_reqs = NULL;
 	XrGraphicsRequirementsVulkanKHR vk_reqs;
 
@@ -166,6 +176,28 @@ void VR_XR_Init (void)
 	Cvar_RegisterVariable (&vr_weapon_throw_velocity_mult);
 	Cvar_RegisterVariable (&vr_weapon_throw_damage_mult);
 	Cvar_RegisterVariable (&vr_weapon_throw_mode);
+
+	Cvar_RegisterVariable (&vr_vrtorso_enabled);
+	Cvar_RegisterVariable (&vr_vrtorso_x_offset);
+	Cvar_RegisterVariable (&vr_vrtorso_y_offset);
+	Cvar_RegisterVariable (&vr_vrtorso_z_offset);
+	Cvar_RegisterVariable (&vr_vrtorso_head_z_mult);
+	Cvar_RegisterVariable (&vr_vrtorso_x_scale);
+	Cvar_RegisterVariable (&vr_vrtorso_y_scale);
+	Cvar_RegisterVariable (&vr_vrtorso_z_scale);
+	Cvar_RegisterVariable (&vr_vrtorso_pitch);
+	Cvar_RegisterVariable (&vr_vrtorso_yaw);
+	Cvar_RegisterVariable (&vr_vrtorso_roll);
+	Cvar_RegisterVariable (&vr_leg_holster_model_enabled);
+	Cvar_RegisterVariable (&vr_leg_holster_model_scale);
+	Cvar_RegisterVariable (&vr_leg_holster_model_x_offset);
+	Cvar_RegisterVariable (&vr_leg_holster_model_y_offset);
+	Cvar_RegisterVariable (&vr_leg_holster_model_z_offset);
+
+	Cvar_RegisterVariable (&vr_finger_grip_bias);
+	Cvar_RegisterVariable (&vr_finger_auto_close_thumb);
+	Cvar_RegisterVariable (&vr_finger_blending);
+	Cvar_RegisterVariable (&vr_finger_blending_speed);
 
 	// vkQuake ships gamma 0.9 / contrast 1.4, a brightened look tuned for a
 	// monitor. quakevr runs both at 1 (gl_vidsdl.cpp:150-152); applied to a
@@ -207,14 +239,20 @@ void VR_XR_Init (void)
 		Mem_Free (ext_props);
 		return;
 	}
-	Mem_Free (ext_props);
-
 	// --- instance ---
-	enabled_exts[0] = XR_KHR_VULKAN_ENABLE2_EXTENSION_NAME;
+	enabled_exts[num_enabled_exts++] = XR_KHR_VULKAN_ENABLE2_EXTENSION_NAME;
+
+	// Finger tracking is optional -- most controllers cannot report joints, and
+	// the fingers fall back to being driven by the analog grip.
+	// Checked before ext_props is released.
+	if (XR_HasExtension (ext_props, ext_count, XR_EXT_HAND_TRACKING_EXTENSION_NAME))
+		enabled_exts[num_enabled_exts++] = XR_EXT_HAND_TRACKING_EXTENSION_NAME;
+
+	Mem_Free (ext_props);
 
 	memset (&instance_info, 0, sizeof (instance_info));
 	instance_info.type = XR_TYPE_INSTANCE_CREATE_INFO;
-	instance_info.enabledExtensionCount = 1;
+	instance_info.enabledExtensionCount = num_enabled_exts;
 	instance_info.enabledExtensionNames = enabled_exts;
 
 	app = &instance_info.applicationInfo;
@@ -1657,6 +1695,8 @@ void VR_XR_InitInput (void)
 		return;
 	}
 
+	XR_InitHandTracking (); // optional; falls back to grip-driven fingers
+
 	xr_input_ready = true;
 	Con_Printf ("OpenXR: controllers ready\n");
 }
@@ -1793,6 +1833,196 @@ static qboolean XR_LocateHand (XrSpace space, XrTime time, vec3_t out_pos, vec3_
 }
 
 /*
+================================================================================
+
+	FINGER TRACKING
+
+	quakevr reads OpenVR's skeletal summary, which hands back a 0..1 curl per
+	finger, and turns it into a frame number 0..5 on the finger models it ships.
+	OpenXR's equivalent is XR_EXT_hand_tracking, which reports joint poses
+	rather than a curl, so the curl is derived from how far each fingertip has
+	folded toward the palm.
+
+	Everything downstream -- the frame mapping, thumb auto-close, grip bias and
+	blending -- follows quakevr (vr.cpp:3270-3354).
+
+================================================================================
+*/
+
+// finger indices, matching quakevr's FingerIdx order
+#define VR_FINGER_THUMB	 0
+#define VR_FINGER_INDEX	 1
+#define VR_FINGER_MIDDLE 2
+#define VR_FINGER_RING	 3
+#define VR_FINGER_PINKY	 4
+
+static XrHandTrackerEXT xr_hand_tracker[VR_HANDS] = {XR_NULL_HANDLE, XR_NULL_HANDLE};
+static qboolean			xr_hand_tracking_ready = false;
+
+static PFN_xrCreateHandTrackerEXT  pfn_xrCreateHandTrackerEXT = NULL;
+static PFN_xrDestroyHandTrackerEXT pfn_xrDestroyHandTrackerEXT = NULL;
+static PFN_xrLocateHandJointsEXT   pfn_xrLocateHandJointsEXT = NULL;
+
+/*
+===============
+XR_InitHandTracking
+
+Optional: plenty of runtimes and controllers do not report joints. When absent
+the analog grip drives the fingers instead, which is what a Touch controller
+can actually express anyway.
+===============
+*/
+static void XR_InitHandTracking (void)
+{
+	XrHandTrackerCreateInfoEXT info;
+	uint32_t				   hand;
+
+	pfn_xrCreateHandTrackerEXT = (PFN_xrCreateHandTrackerEXT)XR_GetProc ("xrCreateHandTrackerEXT");
+	pfn_xrDestroyHandTrackerEXT = (PFN_xrDestroyHandTrackerEXT)XR_GetProc ("xrDestroyHandTrackerEXT");
+	pfn_xrLocateHandJointsEXT = (PFN_xrLocateHandJointsEXT)XR_GetProc ("xrLocateHandJointsEXT");
+
+	if (!pfn_xrCreateHandTrackerEXT || !pfn_xrLocateHandJointsEXT)
+		return; // runtime does not offer it
+
+	for (hand = 0; hand < VR_HANDS; hand++)
+	{
+		memset (&info, 0, sizeof (info));
+		info.type = XR_TYPE_HAND_TRACKER_CREATE_INFO_EXT;
+		info.hand = (hand == VR_HAND_LEFT) ? XR_HAND_LEFT_EXT : XR_HAND_RIGHT_EXT;
+		info.handJointSet = XR_HAND_JOINT_SET_DEFAULT_EXT;
+
+		if (XR_FAILED (pfn_xrCreateHandTrackerEXT (xr_session, &info, &xr_hand_tracker[hand])))
+		{
+			xr_hand_tracker[hand] = XR_NULL_HANDLE;
+			return;
+		}
+	}
+
+	xr_hand_tracking_ready = true;
+	Con_Printf ("OpenXR: finger tracking available\n");
+}
+
+/*
+===============
+XR_CurlToFrame
+
+quakevr's handSkeletalToFrame (vr.cpp:3270-3299): bias, clamp, scale to the
+model's five frames, with the thumb closing automatically once the other
+fingers are mostly curled -- otherwise a fist reads as a thumbs-up.
+===============
+*/
+static float XR_CurlToFrame (const float curl[5], int finger)
+{
+	if (finger == VR_FINGER_THUMB && vr_finger_auto_close_thumb.value)
+	{
+		const float avg = (curl[VR_FINGER_INDEX] + curl[VR_FINGER_MIDDLE] + curl[VR_FINGER_RING] + curl[VR_FINGER_PINKY]) * 0.25f;
+		if (avg > 0.5f)
+			return 5.0f;
+	}
+
+	return CLAMP (0.0f, curl[finger] + vr_finger_grip_bias.value, 1.0f) * 5.0f;
+}
+
+/*
+===============
+XR_UpdateFingers
+
+Blending is quakevr's: move toward the target at a fixed rate rather than
+snapping, so fingers do not pop between frames. (vr.cpp:3308-3341)
+===============
+*/
+static void XR_UpdateFingers (int hand)
+{
+	vr_hand_t *h = &vr_xr_hand[hand];
+	float	   curl[5];
+	int		   i;
+
+	// Default: drive every finger from the analog grip, which is all a Touch
+	// controller reports. Trigger drives the index separately so pointing works.
+	for (i = 0; i < 5; i++)
+		curl[i] = h->grip;
+	curl[VR_FINGER_INDEX] = q_max (h->grip, h->trigger);
+
+	if (xr_hand_tracking_ready && xr_hand_tracker[hand] != XR_NULL_HANDLE)
+	{
+		XrHandJointsLocateInfoEXT	locate;
+		XrHandJointLocationsEXT		locations;
+		XrHandJointLocationEXT		joints[XR_HAND_JOINT_COUNT_EXT];
+
+		memset (&joints, 0, sizeof (joints));
+		memset (&locations, 0, sizeof (locations));
+		locations.type = XR_TYPE_HAND_JOINT_LOCATIONS_EXT;
+		locations.jointCount = XR_HAND_JOINT_COUNT_EXT;
+		locations.jointLocations = joints;
+
+		memset (&locate, 0, sizeof (locate));
+		locate.type = XR_TYPE_HAND_JOINTS_LOCATE_INFO_EXT;
+		locate.baseSpace = xr_space;
+		locate.time = xr_frame_state.predictedDisplayTime;
+
+		if (XR_SUCCEEDED (pfn_xrLocateHandJointsEXT (xr_hand_tracker[hand], &locate, &locations)) && locations.isActive)
+		{
+			// tip and metacarpal joint per finger, in XR_HAND_JOINT_* order
+			static const int tip[5] = {
+				XR_HAND_JOINT_THUMB_TIP_EXT, XR_HAND_JOINT_INDEX_TIP_EXT, XR_HAND_JOINT_MIDDLE_TIP_EXT, XR_HAND_JOINT_RING_TIP_EXT,
+				XR_HAND_JOINT_LITTLE_TIP_EXT};
+			static const int base[5] = {
+				XR_HAND_JOINT_THUMB_METACARPAL_EXT, XR_HAND_JOINT_INDEX_PROXIMAL_EXT, XR_HAND_JOINT_MIDDLE_PROXIMAL_EXT,
+				XR_HAND_JOINT_RING_PROXIMAL_EXT, XR_HAND_JOINT_LITTLE_PROXIMAL_EXT};
+			const XrVector3f *palm = &joints[XR_HAND_JOINT_PALM_EXT].pose.position;
+
+			for (i = 0; i < 5; i++)
+			{
+				XrVector3f	 dt, db;
+				float		 lt, lb;
+
+				dt.x = joints[tip[i]].pose.position.x - palm->x;
+				dt.y = joints[tip[i]].pose.position.y - palm->y;
+				dt.z = joints[tip[i]].pose.position.z - palm->z;
+				db.x = joints[base[i]].pose.position.x - palm->x;
+				db.y = joints[base[i]].pose.position.y - palm->y;
+				db.z = joints[base[i]].pose.position.z - palm->z;
+
+				lt = sqrtf (dt.x * dt.x + dt.y * dt.y + dt.z * dt.z);
+				lb = sqrtf (db.x * db.x + db.y * db.y + db.z * db.z);
+
+				// an extended finger puts its tip much further from the palm
+				// than its knuckle; a curled one brings the two together
+				if (lb > 0.0001f)
+					curl[i] = CLAMP (0.0f, 1.0f - ((lt / lb) - 1.0f), 1.0f);
+			}
+		}
+	}
+
+	for (i = 0; i < 5; i++)
+	{
+		const float target = XR_CurlToFrame (curl, i);
+
+		if (!vr_finger_blending.value)
+		{
+			h->finger[i] = target;
+			continue;
+		}
+
+		{
+			const float speed = (float)host_frametime * vr_finger_blending_speed.value;
+			if (h->finger[i] > target)
+			{
+				h->finger[i] -= speed;
+				if (h->finger[i] < target)
+					h->finger[i] = target;
+			}
+			else if (h->finger[i] < target)
+			{
+				h->finger[i] += speed;
+				if (h->finger[i] > target)
+					h->finger[i] = target;
+			}
+		}
+	}
+}
+
+/*
 ===============
 VR_XR_SyncInput
 ===============
@@ -1839,6 +2069,8 @@ void VR_XR_SyncInput (void)
 		h->btn_b = XR_ReadBool (xr_act_btn_b, hand);
 		h->btn_stick = XR_ReadBool (xr_act_btn_stick, hand);
 		h->btn_menu = XR_ReadBool (xr_act_menu, hand);
+
+		XR_UpdateFingers ((int)hand);
 	}
 }
 
@@ -1892,6 +2124,25 @@ cvar_t vr_height_calibration = {"vr_height_calibration", "1.6", CVAR_ARCHIVE};
 // Global gun model tweaks, on top of the per-weapon table.
 cvar_t vr_gunmodelscale = {"vr_gunmodelscale", "1.0", CVAR_ARCHIVE};
 cvar_t vr_gunmodely = {"vr_gunmodely", "0", CVAR_ARCHIVE};
+
+// VR body and leg holsters. Defaults are quakevr's (vr_cvars.cpp:123-145).
+cvar_t vr_vrtorso_enabled = {"vr_vrtorso_enabled", "1", CVAR_ARCHIVE};
+cvar_t vr_vrtorso_x_offset = {"vr_vrtorso_x_offset", "-3.25", CVAR_ARCHIVE};
+cvar_t vr_vrtorso_y_offset = {"vr_vrtorso_y_offset", "0.0", CVAR_ARCHIVE};
+cvar_t vr_vrtorso_z_offset = {"vr_vrtorso_z_offset", "-21.0", CVAR_ARCHIVE};
+cvar_t vr_vrtorso_head_z_mult = {"vr_vrtorso_head_z_mult", "32.0", CVAR_ARCHIVE};
+cvar_t vr_vrtorso_x_scale = {"vr_vrtorso_x_scale", "1.0", CVAR_ARCHIVE};
+cvar_t vr_vrtorso_y_scale = {"vr_vrtorso_y_scale", "1.0", CVAR_ARCHIVE};
+cvar_t vr_vrtorso_z_scale = {"vr_vrtorso_z_scale", "1.0", CVAR_ARCHIVE};
+cvar_t vr_vrtorso_pitch = {"vr_vrtorso_pitch", "0.0", CVAR_ARCHIVE};
+cvar_t vr_vrtorso_yaw = {"vr_vrtorso_yaw", "0.0", CVAR_ARCHIVE};
+cvar_t vr_vrtorso_roll = {"vr_vrtorso_roll", "0.0", CVAR_ARCHIVE};
+
+cvar_t vr_leg_holster_model_enabled = {"vr_leg_holster_model_enabled", "1", CVAR_ARCHIVE};
+cvar_t vr_leg_holster_model_scale = {"vr_leg_holster_model_scale", "1", CVAR_ARCHIVE};
+cvar_t vr_leg_holster_model_x_offset = {"vr_leg_holster_model_x_offset", "0.0", CVAR_ARCHIVE};
+cvar_t vr_leg_holster_model_y_offset = {"vr_leg_holster_model_y_offset", "0.0", CVAR_ARCHIVE};
+cvar_t vr_leg_holster_model_z_offset = {"vr_leg_holster_model_z_offset", "0.0", CVAR_ARCHIVE};
 
 /*
 ================================================================================
@@ -2039,6 +2290,73 @@ quakevr's VR_ModAllWeapons (vr.cpp:1150-1177). Called after the client has
 precached a map's models.
 ===============
 */
+/*
+===============
+XR_ModModel
+
+Applies a uniform-ish scale and offset to a named model, the same way weapons
+are handled. Missing models are not an error: a game may simply not ship them.
+===============
+*/
+static void XR_ModModel (const char *name, const vec3_t scale, const vec3_t offset)
+{
+	qmodel_t   *model;
+	aliashdr_t *hdr;
+	int			i;
+
+	model = Mod_ForName (name, false);
+	if (!model || model->type != mod_alias)
+		return;
+
+	hdr = (aliashdr_t *)Mod_Extradata (model);
+	if (!hdr)
+		return;
+
+	for (i = 0; i < 3; i++)
+	{
+		hdr->scale[i] = hdr->original_scale[i] * scale[i];
+		hdr->scale_origin[i] = hdr->original_scale_origin[i] + offset[i];
+	}
+}
+
+/*
+===============
+VR_XR_ModAllModels
+
+quakevr's VR_ModAllModels: the weapons, plus the player's own body and the leg
+holsters, which are ordinary models positioned by the QC.
+(quakevr vr.cpp:1128-1152, 1180-1185)
+===============
+*/
+void VR_XR_ModAllModels (void)
+{
+	vec3_t scale, offset;
+
+	if (!vr_xr_active)
+		return;
+
+	if (vr_vrtorso_enabled.value)
+	{
+		scale[0] = vr_vrtorso_x_scale.value;
+		scale[1] = vr_vrtorso_y_scale.value;
+		scale[2] = vr_vrtorso_z_scale.value;
+		offset[0] = offset[1] = offset[2] = 0.0f; // quakevr passes vec3_zero here
+		XR_ModModel ("progs/vrtorso.mdl", scale, offset);
+	}
+
+	if (vr_leg_holster_model_enabled.value)
+	{
+		const float f = vr_leg_holster_model_scale.value;
+		scale[0] = scale[1] = scale[2] = f;
+		offset[0] = vr_leg_holster_model_x_offset.value;
+		offset[1] = vr_leg_holster_model_y_offset.value;
+		offset[2] = vr_leg_holster_model_z_offset.value;
+		XR_ModModel ("progs/legholster.mdl", scale, offset);
+	}
+
+	VR_XR_ModAllWeapons ();
+}
+
 void VR_XR_ModAllWeapons (void)
 {
 	const vr_wpn_offset_t *table;

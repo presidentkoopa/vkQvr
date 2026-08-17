@@ -1108,7 +1108,7 @@ static void CL_ParseServerInfo (void)
 	// Weapon models are freshly loaded here, so their original_scale snapshots
 	// are current: re-apply the VR offsets now. quakevr does this once at
 	// startup (VR_ModAllModels), but vkQuake reloads models per map.
-	VR_XR_ModAllWeapons ();
+	VR_XR_ModAllModels ();
 
 	R_NewMap ();
 

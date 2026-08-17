@@ -126,6 +126,11 @@ typedef struct
 	vec3_t throw_velocity;
 	vec3_t angular_velocity;
 
+	// Per-finger curl, 0 (open) to 5 (closed) -- the frame number of the finger
+	// models quakevr ships. Order matches its FingerIdx.
+	// (quakevr handSkeletalToFrame, vr.cpp:3270-3299)
+	float finger[5];
+
 	qboolean btn_a;		 // A / X
 	qboolean btn_b;		 // B / Y
 	qboolean btn_stick;	 // thumbstick click
@@ -202,6 +207,25 @@ extern cvar_t vr_gunmodely;
 struct aliashdr_s;
 void VR_XR_ApplyWeaponModelMod (struct aliashdr_s *hdr, const char *model_name);
 void VR_XR_ModAllWeapons (void);
+// weapons plus the player's body and leg holsters (quakevr VR_ModAllModels)
+void VR_XR_ModAllModels (void);
+
+extern cvar_t vr_vrtorso_enabled;
+extern cvar_t vr_vrtorso_x_offset;
+extern cvar_t vr_vrtorso_y_offset;
+extern cvar_t vr_vrtorso_z_offset;
+extern cvar_t vr_vrtorso_head_z_mult;
+extern cvar_t vr_vrtorso_x_scale;
+extern cvar_t vr_vrtorso_y_scale;
+extern cvar_t vr_vrtorso_z_scale;
+extern cvar_t vr_vrtorso_pitch;
+extern cvar_t vr_vrtorso_yaw;
+extern cvar_t vr_vrtorso_roll;
+extern cvar_t vr_leg_holster_model_enabled;
+extern cvar_t vr_leg_holster_model_scale;
+extern cvar_t vr_leg_holster_model_x_offset;
+extern cvar_t vr_leg_holster_model_y_offset;
+extern cvar_t vr_leg_holster_model_z_offset;
 
 // vrbits0 flags, values taken from quakevr (quakedef_macros.hpp:299-310) so a
 // progs.dat built against quakevr's QC reads the same bits.
