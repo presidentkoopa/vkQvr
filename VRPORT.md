@@ -31,9 +31,8 @@ Legend: **[x]** done · **[~]** partial · **[ ]** not started
 - [x] 16. `vr_floor_offset` -16, applied once
 - [x] 17. Body yaw from stick + head yaw on top
 - [x] 18. `srand` reseed per eye (`vr.cpp:1590`)
-- [~] 19. Room-scale movement — **drifts**: `consumed` accumulator grows unbounded when
-      the server clips the move. quakevr zeroes head XY (`vr.cpp:2696-2697`) and stores
-      hands head-relative so it cannot drift. **Rewrite to match.**
+- [x] 19. Room-scale movement — head XY discarded from the camera, hands measured
+      head-relative, accumulator retired. Cannot drift by construction.
 - [ ] 20. `VR_GetBodyYawAngle` — blended head/hand body yaw (`vr.cpp:2526-2540`)
 - [ ] 21. `VR_GetCrouchRatio` / crouch-aware anchors
 - [ ] 22. `vr_height_calibration` wired to the anchors (cvar exists, unused)
@@ -64,8 +63,8 @@ Legend: **[x]** done · **[~]** partial · **[ ]** not started
 - [x] 40. `original_scale` snapshot for MDL, MD5, MD3
 - [x] 41. Viewmodel depth-range and `cl_gun_fovscale` disabled in VR
 - [x] 42. Gun wall collisions (default off pending verification)
-- [ ] 43. QC `handrot` must match the drawn weapon angles — currently disagrees
-- [ ] 44. Mod the header the renderer actually draws (`skinnum`, not 0)
+- [x] 43. QC `handrot` matches the drawn weapon angles, gun pre-rotation included
+- [x] 44. Offsets applied to the header the renderer actually draws
 - [ ] 45. Weapon weight simulation (10 `vr_wpn_pos_weight*` cvars)
 - [ ] 46. `VR_DoWeaponDirSlerp` — weapon direction smoothing
 - [ ] 47. Two-handed aiming distance rules (`VR_GoodDistanceFor*`, 5 `vr_2h*` cvars)
@@ -110,15 +109,22 @@ Legend: **[x]** done · **[~]** partial · **[ ]** not started
 
 ---
 
-## Known bugs, ranked
+## Known bugs
 
-1. **Room-scale drift** (#19) — rig slides from the player entity over time
-2. **QC handrot ≠ drawn weapon angles** (#43) — holster geometry disagrees with the gun
-3. **Modded header ≠ drawn header** (#44) — offsets silently no-op on some models
-4. **Silent fallback to face-mounted gun** on a single tracking dropout
+All four from the audit are fixed. Nothing outstanding that is known to be wrong
+— what remains is unported features, not defects.
 
 ## Score
 
-**~40 of 76 done.** Engine, tracking, controllers and the QuakeC bridge are
-essentially complete. What remains is largely presentation (HUD, menu, hand and
-body rendering) and gameplay tuning cvars.
+**~44 of 76 done.** Engine, tracking, controllers and the QuakeC bridge are
+complete. What remains is largely presentation (HUD, menu, hand and body
+rendering) and gameplay tuning cvars.
+
+## Next, in order
+
+1. Hand models rendered with per-finger frames (#64) — the models are installed
+2. VR torso positioned per-frame (#63)
+3. VR HUD (#65) — the 2D bar is currently painted flat across the view
+4. Weapon weight simulation (#45) and 2H grab rules (#47)
+5. Force grab (#57) and throwing tuning (#58)
+6. Holsters persisting across level change (#56) — needs spawnparm extension
