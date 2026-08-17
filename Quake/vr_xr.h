@@ -188,5 +188,13 @@ extern cvar_t vr_laser;
 extern cvar_t vr_two_handed;
 extern cvar_t vr_two_hand_dist;
 extern cvar_t vr_height_calibration;
+extern cvar_t vr_gunmodelscale;
+extern cvar_t vr_gunmodely;
+
+// Per-weapon model offset and scale, so the gun sits correctly in the hand.
+// Values are quakevr's, tuned against real play (vr.cpp:1029-1064).
+struct aliashdr_s;
+void VR_XR_ApplyWeaponModelMod (struct aliashdr_s *hdr, const char *model_name);
+void VR_XR_ModAllWeapons (void);
 
 #endif /* _VR_XR_H */

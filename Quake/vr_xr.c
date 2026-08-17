@@ -158,6 +158,8 @@ void VR_XR_Init (void)
 	Cvar_RegisterVariable (&vr_two_handed);
 	Cvar_RegisterVariable (&vr_two_hand_dist);
 	Cvar_RegisterVariable (&vr_height_calibration);
+	Cvar_RegisterVariable (&vr_gunmodelscale);
+	Cvar_RegisterVariable (&vr_gunmodely);
 
 	Cmd_AddCommand ("vr_calibrate", VR_XR_Calibrate_f);
 	Cmd_AddCommand ("vr_recenter", VR_XR_Recenter_f);
@@ -1797,6 +1799,191 @@ cvar_t vr_two_hand_dist = {"vr_two_hand_dist", "24", CVAR_ARCHIVE}; // max hand 
 
 // Player standing height in metres, used by "vr_calibrate".
 cvar_t vr_height_calibration = {"vr_height_calibration", "1.6", CVAR_ARCHIVE};
+
+// Global gun model tweaks, on top of the per-weapon table.
+cvar_t vr_gunmodelscale = {"vr_gunmodelscale", "1.0", CVAR_ARCHIVE};
+cvar_t vr_gunmodely = {"vr_gunmodely", "0", CVAR_ARCHIVE};
+
+/*
+================================================================================
+
+	WEAPON MODEL OFFSETS
+
+	Quake's viewmodels are built to sit at the bottom-right of a flat screen,
+	not to be held. Each one needs its own offset and scale to end up in the
+	player's hand pointing the right way.
+
+	Every number below is quakevr's (vr.cpp:1029-1064). They were tuned against
+	real play over a long time and there is nothing to be gained by re-deriving
+	them.
+
+================================================================================
+*/
+
+typedef struct
+{
+	const char *model;
+	float		ofs_x, ofs_y, ofs_z;
+	float		scale;
+} vr_wpn_offset_t;
+
+// vanilla Quake, Scourge of Armagon, Dissolution of Eternity
+static const vr_wpn_offset_t vr_wpn_offsets_id1[] = {
+	{"progs/v_axe.mdl", -4.0f, 24.0f, 37.0f, 0.33f},
+	{"progs/v_shot.mdl", 1.5f, 1.0f, 10.0f, 0.5f},	  // gun
+	{"progs/v_shot2.mdl", -3.5f, 1.0f, 8.5f, 0.8f},	  // shotgun
+	{"progs/v_nail.mdl", -5.0f, 3.0f, 15.0f, 0.5f},	  // nailgun
+	{"progs/v_nail2.mdl", 0.0f, 3.0f, 19.0f, 0.5f},	  // supernailgun
+	{"progs/v_rock.mdl", 10.0f, 1.5f, 13.0f, 0.5f},	  // grenade
+	{"progs/v_rock2.mdl", 10.0f, 7.0f, 19.0f, 0.5f},  // rocket
+	{"progs/v_light.mdl", 3.0f, 4.0f, 13.0f, 0.5f},	  // lightning
+	{"progs/v_hammer.mdl", -4.0f, 18.0f, 37.0f, 0.33f},	 // mjolnir
+	{"progs/v_laserg.mdl", 65.0f, 3.7f, 17.0f, 0.33f},	 // laser
+	{"progs/v_prox.mdl", 10.0f, 1.5f, 13.0f, 0.5f},		 // proximity
+	{"progs/v_lava.mdl", -5.0f, 3.0f, 15.0f, 0.5f},		 // lava nailgun
+	{"progs/v_lava2.mdl", 0.0f, 3.0f, 19.0f, 0.5f},		 // lava supernailgun
+	{"progs/v_multi.mdl", 10.0f, 1.5f, 13.0f, 0.5f},	 // multigrenade
+	{"progs/v_multi2.mdl", 10.0f, 7.0f, 19.0f, 0.5f},	 // multirocket
+	{"progs/v_plasma.mdl", 3.0f, 4.0f, 13.0f, 0.5f},	 // plasma
+	{"progs/hand.mdl", 0.0f, 0.0f, 0.0f, 0.0f},
+	{"progs/v_grpple.mdl", 0.0f, 0.0f, 0.0f, 0.0f},
+};
+
+// Arcane Dimensions, tuned against v1.70 + patch1
+static const vr_wpn_offset_t vr_wpn_offsets_ad[] = {
+	{"progs/v_shadaxe0.mdl", -1.5f, 43.1f, 41.0f, 0.25f}, // shadow axe
+	{"progs/v_shadaxe3.mdl", -1.5f, 43.1f, 41.0f, 0.25f}, // shadow axe upgrade
+	{"progs/v_shot.mdl", 1.5f, 1.7f, 17.5f, 0.33f},		  // shotgun
+	{"progs/v_shot2.mdl", -3.5f, 0.4f, 8.5f, 0.8f},		  // double barrel
+	{"progs/v_shot3.mdl", -3.5f, 0.4f, 8.5f, 0.8f},		  // Widowmaker
+	{"progs/v_nail.mdl", -9.5f, 3.0f, 17.0f, 0.5f},
+	{"progs/v_nail2.mdl", -6.0f, 3.5f, 20.0f, 0.4f},
+	{"progs/v_rock.mdl", -3.0f, 1.25f, 17.0f, 0.5f},
+	{"progs/v_rock2.mdl", 0.0f, 5.55f, 22.5f, 0.45f},
+	{"progs/v_light.mdl", -4.0f, 3.1f, 13.0f, 0.5f},
+	{"progs/v_plasma.mdl", 2.8f, 1.8f, 22.5f, 0.5f},
+};
+
+/*
+===============
+VR_FindWpnOffset
+
+Arcane Dimensions reuses stock model names with different geometry, so the
+table is chosen by game directory exactly as quakevr does (vr.cpp:1027).
+===============
+*/
+static const vr_wpn_offset_t *VR_FindWpnOffset (const char *model_name)
+{
+	const vr_wpn_offset_t *table;
+	size_t				   count, i;
+
+	if (!model_name || !*model_name)
+		return NULL;
+
+	if (!strcmp (COM_SkipPath (com_gamedir), "ad"))
+	{
+		table = vr_wpn_offsets_ad;
+		count = countof (vr_wpn_offsets_ad);
+	}
+	else
+	{
+		table = vr_wpn_offsets_id1;
+		count = countof (vr_wpn_offsets_id1);
+	}
+
+	for (i = 0; i < count; i++)
+		if (!q_strcasecmp (table[i].model, model_name))
+			return &table[i];
+
+	return NULL;
+}
+
+/*
+===============
+VR_XR_ApplyWeaponModelMod
+
+Rewrites the model header's scale and offset, which is where Quake already
+applies a per-model transform, so nothing in the render path has to change.
+Always derived from the original values rather than the current ones, or the
+edit would compound every frame. (quakevr VR_ApplyModelMod, vr.cpp:614-622)
+===============
+*/
+void VR_XR_ApplyWeaponModelMod (aliashdr_t *hdr, const char *model_name)
+{
+	const vr_wpn_offset_t *w;
+	float				   correct;
+	int					   i;
+
+	if (!hdr)
+		return;
+
+	// quakevr's scale correction: its offsets were authored against a 0.75
+	// world scale, so they have to be rescaled to whatever is in use now
+	correct = (vr_world_scale.value / 0.75f) * vr_gunmodelscale.value;
+
+	w = VR_FindWpnOffset (model_name);
+	if (!w || !VR_XR_SessionRunning () || !vr_hand_aiming.value)
+	{
+		// not a known weapon, or VR is not driving the gun: put it back
+		for (i = 0; i < 3; i++)
+		{
+			hdr->scale[i] = hdr->original_scale[i];
+			hdr->scale_origin[i] = hdr->original_scale_origin[i];
+		}
+		return;
+	}
+
+	for (i = 0; i < 3; i++)
+		hdr->scale[i] = hdr->original_scale[i] * w->scale * correct;
+
+	hdr->scale_origin[0] = (hdr->original_scale_origin[0] + w->ofs_x) * correct;
+	hdr->scale_origin[1] = (hdr->original_scale_origin[1] + w->ofs_y) * correct;
+	hdr->scale_origin[2] = (hdr->original_scale_origin[2] + w->ofs_z + vr_gunmodely.value) * correct;
+}
+
+/*
+===============
+VR_XR_ModAllWeapons
+
+Walks the offset table and applies each entry to its model, the same shape as
+quakevr's VR_ModAllWeapons (vr.cpp:1150-1177). Called after the client has
+precached a map's models.
+===============
+*/
+void VR_XR_ModAllWeapons (void)
+{
+	const vr_wpn_offset_t *table;
+	size_t				   count, i;
+
+	if (!vr_xr_active)
+		return;
+
+	if (!strcmp (COM_SkipPath (com_gamedir), "ad"))
+	{
+		table = vr_wpn_offsets_ad;
+		count = countof (vr_wpn_offsets_ad);
+	}
+	else
+	{
+		table = vr_wpn_offsets_id1;
+		count = countof (vr_wpn_offsets_id1);
+	}
+
+	for (i = 0; i < count; i++)
+	{
+		qmodel_t   *model;
+		aliashdr_t *hdr;
+
+		// false: a weapon the current game does not ship is not an error
+		model = Mod_ForName (table[i].model, false);
+		if (!model || model->type != mod_alias)
+			continue;
+
+		hdr = (aliashdr_t *)Mod_Extradata (model);
+		if (hdr)
+			VR_XR_ApplyWeaponModelMod (hdr, table[i].model);
+	}
+}
 
 /*
 ===============

@@ -359,6 +359,11 @@ typedef struct aliashdr_s
 	int					version;
 	vec3_t				scale;
 	vec3_t				scale_origin;
+	// Snapshot taken at load so VR can re-derive scale/scale_origin from the
+	// model's own values every frame instead of compounding its edits.
+	// (quakevr gl_model.cpp:4155-4156)
+	vec3_t				original_scale;
+	vec3_t				original_scale_origin;
 	float				boundingradius;
 	vec3_t				eyeposition;
 	int					numskins;

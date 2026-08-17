@@ -4131,6 +4131,9 @@ static void Mod_LoadAliasModel (qmodel_t *mod, void *buffer)
 		pheader->scale[i] = ReadFloatUnaligned (mod_base + offsetof (mdl_t, scale[i]));
 		pheader->scale_origin[i] = ReadFloatUnaligned (mod_base + offsetof (mdl_t, scale_origin[i]));
 		pheader->eyeposition[i] = ReadFloatUnaligned (mod_base + offsetof (mdl_t, eyeposition[i]));
+		// keep the untouched values so VR can re-derive rather than accumulate
+		pheader->original_scale[i] = pheader->scale[i];
+		pheader->original_scale_origin[i] = pheader->scale_origin[i];
 	}
 
 	//

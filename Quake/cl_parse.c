@@ -1105,6 +1105,11 @@ static void CL_ParseServerInfo (void)
 	// local state
 	cl.entities[0].model = cl.worldmodel = cl.model_precache[1];
 
+	// Weapon models are freshly loaded here, so their original_scale snapshots
+	// are current: re-apply the VR offsets now. quakevr does this once at
+	// startup (VR_ModAllModels), but vkQuake reloads models per map.
+	VR_XR_ModAllWeapons ();
+
 	R_NewMap ();
 
 	// johnfitz -- clear out string; we don't consider identical
