@@ -1543,6 +1543,27 @@ void VR_XR_EndFrame (void)
 				vr_xr_hand[0].tracked, vr_xr_hand[0].pos[0], vr_xr_hand[0].pos[1], vr_xr_hand[0].pos[2], vr_xr_hand[0].trigger, vr_xr_hand[0].grip,
 				vr_xr_hand[0].stick[0], vr_xr_hand[0].stick[1], vr_xr_hand[1].tracked, vr_xr_hand[1].pos[0], vr_xr_hand[1].pos[1], vr_xr_hand[1].pos[2],
 				vr_xr_hand[1].trigger, vr_xr_hand[1].grip, vr_xr_hand[1].stick[0], vr_xr_hand[1].stick[1]);
+
+			// The whole weapon position chain, end to end, so a report of the
+			// gun sitting wrong can be attributed instead of guessed at.
+			// wpn-head is the number that matters: it should equal the real
+			// distance from your headset to your controller. If it does and
+			// the gun still looks wrong, the error is downstream in the model
+			// offsets, not here. Units are Quake units, 26.25 to the metre.
+			if (cl.viewentity > 0 && cl.viewentity < cl.max_edicts && cl.entities)
+			{
+				const int	  mh = VR_XR_MainHand ();
+				const vec3_t *po = &cl.entities[cl.viewentity].origin;
+				vec3_t		  wo, wa;
+
+				if (VR_XR_WeaponPose (*po, wo, wa))
+					Con_Printf (
+						"XR wpn: player(%.0f %.0f %.0f) head(%.0f %.0f %.0f) aim(%.0f %.0f %.0f) -> wpn(%.0f %.0f %.0f) | wpn-head(%.0f %.0f %.0f) "
+						"ang(%.0f %.0f %.0f)\n",
+						(*po)[0], (*po)[1], (*po)[2], xr_last_head_pos[0], xr_last_head_pos[1], xr_last_head_pos[2], vr_xr_hand[mh].aim_pos[0],
+						vr_xr_hand[mh].aim_pos[1], vr_xr_hand[mh].aim_pos[2], wo[0], wo[1], wo[2], wo[0] - ((*po)[0] + xr_last_head_pos[0]),
+						wo[1] - ((*po)[1] + xr_last_head_pos[1]), wo[2] - ((*po)[2] + xr_last_head_pos[2]), wa[0], wa[1], wa[2]);
+			}
 			frames = e0 = e1 = submitted = noviews = shouldrender = 0;
 		}
 	}
