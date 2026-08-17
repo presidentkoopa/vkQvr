@@ -5525,16 +5525,44 @@ static void PF_cl_getrenderentity (void)
 // 300-399: csqc's random crap
 // 400+: dp's random crap
 // clang-format off
+// quakevr builtins, defined further down; the table below needs them by name
+static void PF_vr_cvar_hmake (void);
+static void PF_vr_cvar_hget (void);
+static void PF_vr_cvar_hset (void);
+static void PF_vr_cvar_hclear (void);
+static void PF_vr_pow (void);
+static void PF_vr_min (void);
+static void PF_vr_max (void);
+static void PF_vr_sin (void);
+static void PF_vr_cos (void);
+static void PF_vr_tan (void);
+static void PF_vr_asin (void);
+static void PF_vr_acos (void);
+static void PF_vr_atan (void);
+static void PF_vr_atan2 (void);
+static void PF_vr_sqrt (void);
+static void PF_vr_maprange (void);
+static void PF_vr_makeforward (void);
+static void PF_vr_redirectvector (void);
+static void PF_vr_rotatevec (void);
+static void PF_vr_calcthrowangle (void);
+static void PF_vr_strlen (void);
+static void PF_vr_nthchar (void);
+static void PF_vr_substr (void);
+static void PF_vr_haptic (void);
+static void PF_vr_particle2 (void);
+static void PF_vr_WriteVec3 (void);
+
 static struct
 {
 	const char *name;
-	builtin_t ssqcfunc;
-	builtin_t csqcfunc;
-	int documentednumber;
+	builtin_t	ssqcfunc;
+	builtin_t	csqcfunc;
+	int			documentednumber;
 	const char *typestr;
 	const char *desc;
-	int number;
-} extensionbuiltins[] = 
+	int			number;
+} extensionbuiltins[] =
 #define PF_NoSSQC NULL
 #define PF_NoCSQC NULL
 {
@@ -5772,6 +5800,36 @@ static struct
 	{"ex_draw_cylinder",			PF_Fixme,						PF_NoCSQC,						0,		"void(vector origin, float halfHeight, float radius, float colormap, float lifetime, float depthtest)"},
 	{"ex_bot_movetopoint",			PF_Fixme,						PF_NoCSQC,						0,		"float(entity bot, vector point)"},
 	{"ex_bot_followentity",			PF_Fixme,						PF_NoCSQC,						0,		"float(entity bot, entity goal)"},
+
+	// --- quakevr builtins ---
+	// Numbers are quakevr's (QC/builtins.qc) and must match exactly: its QC
+	// declares them as "= #87" and so on, so they resolve by number, not name.
+	{"particle2",					PF_vr_particle2,				PF_Fixme,						79,		"void(vector org, vector dir, float preset, float count)"},
+	{"pow",							PF_vr_pow,						PF_vr_pow,						80,		"float(float base, float exp)"},
+	{"haptic",						PF_vr_haptic,					PF_Fixme,						81,		"void(float hand, float delay, float duration, float frequency, float amplitude)"},
+	{"min",							PF_vr_min,						PF_vr_min,						82,		"float(float a, float b)"},
+	{"max",							PF_vr_max,						PF_vr_max,						83,		"float(float a, float b)"},
+	{"makeforward",					PF_vr_makeforward,				PF_vr_makeforward,				84,		"void(vector angles)"},
+	{"maprange",					PF_vr_maprange,					PF_vr_maprange,					85,		"float(float v, float iMin, float iMax, float oMin, float oMax)"},
+	{"cvar_hmake",					PF_vr_cvar_hmake,				PF_vr_cvar_hmake,				86,		"float(string name)"},
+	{"cvar_hget",					PF_vr_cvar_hget,				PF_vr_cvar_hget,				87,		"float(float handle)"},
+	{"cvar_hclear",					PF_vr_cvar_hclear,				PF_vr_cvar_hclear,				88,		"void()"},
+	{"redirectvector",				PF_vr_redirectvector,			PF_vr_redirectvector,			89,		"vector(vector input, vector exemplar)"},
+	{"cvar_hset",					PF_vr_cvar_hset,				PF_vr_cvar_hset,				90,		"void(float handle, float value)"},
+	{"WriteVec3",					PF_vr_WriteVec3,				PF_Fixme,						95,		"void(float to, vector v)"},
+	{"vr_strlen",					PF_vr_strlen,					PF_vr_strlen,					97,		"float(string s)"},
+	{"nthchar",						PF_vr_nthchar,					PF_vr_nthchar,					98,		"string(string s, float n)"},
+	{"substr",						PF_vr_substr,					PF_vr_substr,					99,		"string(string s, float start, float len)"},
+	{"calcthrowangle",				PF_vr_calcthrowangle,			PF_vr_calcthrowangle,			100,	"float(vector from, vector to, float speed, float gravity)"},
+	{"rotatevec",					PF_vr_rotatevec,				PF_vr_rotatevec,				101,	"vector(vector v, vector angles)"},
+	{"vr_sin",						PF_vr_sin,						PF_vr_sin,						102,	"float(float x)"},
+	{"vr_cos",						PF_vr_cos,						PF_vr_cos,						103,	"float(float x)"},
+	{"asin",						PF_vr_asin,						PF_vr_asin,						104,	"float(float x)"},
+	{"acos",						PF_vr_acos,						PF_vr_acos,						105,	"float(float x)"},
+	{"vr_tan",						PF_vr_tan,						PF_vr_tan,						106,	"float(float x)"},
+	{"atan",						PF_vr_atan,						PF_vr_atan,						107,	"float(float x)"},
+	{"vr_sqrt",						PF_vr_sqrt,						PF_vr_sqrt,						108,	"float(float x)"},
+	{"atan2",						PF_vr_atan2,					PF_vr_atan2,					109,	"float(float y, float x)"},
 };
 // clang-format on
 
@@ -5984,6 +6042,276 @@ static void PF_builtinsupported (void)
 		}
 	}
 	G_FLOAT (OFS_RETURN) = 0;
+}
+
+/*
+================================================================================
+
+	QUAKEVR BUILTINS
+
+	quakevr's QuakeC calls these by explicit number (QC/builtins.qc), so the
+	numbers in the table above are part of the contract, not a suggestion.
+	Implementations follow quakevr's (pr_cmds.cpp) so behaviour matches.
+
+================================================================================
+*/
+
+// Cvar handles: quakevr's QC resolves a cvar once and then reads it by integer
+// handle every frame, avoiding a string compare per access.
+// (quakevr cvar.cpp:820-857)
+#define VR_MAX_CVAR_HANDLES 256
+static cvar_t *vr_cvar_handles[VR_MAX_CVAR_HANDLES];
+static int	   vr_num_cvar_handles = 0;
+
+static void PF_vr_cvar_hmake (void)
+{
+	const char *name = G_STRING (OFS_PARM0);
+	cvar_t	   *var = Cvar_FindVar (name);
+
+	if (!var)
+	{
+		Con_Printf ("Attempted to make handle for invalid CVar '%s'\n", name);
+		G_INT (OFS_RETURN) = -1;
+		return;
+	}
+	if (vr_num_cvar_handles >= VR_MAX_CVAR_HANDLES)
+	{
+		Con_Printf ("Out of cvar handles\n");
+		G_INT (OFS_RETURN) = -1;
+		return;
+	}
+
+	vr_cvar_handles[vr_num_cvar_handles] = var;
+	G_INT (OFS_RETURN) = vr_num_cvar_handles++;
+}
+
+static void PF_vr_cvar_hget (void)
+{
+	const int h = G_INT (OFS_PARM0);
+	if (h < 0 || h >= vr_num_cvar_handles)
+	{
+		G_FLOAT (OFS_RETURN) = 0;
+		return;
+	}
+	G_FLOAT (OFS_RETURN) = vr_cvar_handles[h]->value;
+}
+
+static void PF_vr_cvar_hset (void)
+{
+	const int h = G_INT (OFS_PARM0);
+	if (h < 0 || h >= vr_num_cvar_handles)
+		return;
+	Cvar_SetValueQuick (vr_cvar_handles[h], G_FLOAT (OFS_PARM1));
+}
+
+static void PF_vr_cvar_hclear (void)
+{
+	vr_num_cvar_handles = 0;
+}
+
+// --- maths ---
+static void PF_vr_pow (void)
+{
+	G_FLOAT (OFS_RETURN) = powf (G_FLOAT (OFS_PARM0), G_FLOAT (OFS_PARM1));
+}
+static void PF_vr_min (void)
+{
+	G_FLOAT (OFS_RETURN) = q_min (G_FLOAT (OFS_PARM0), G_FLOAT (OFS_PARM1));
+}
+static void PF_vr_max (void)
+{
+	G_FLOAT (OFS_RETURN) = q_max (G_FLOAT (OFS_PARM0), G_FLOAT (OFS_PARM1));
+}
+static void PF_vr_sin (void)
+{
+	G_FLOAT (OFS_RETURN) = sinf (G_FLOAT (OFS_PARM0));
+}
+static void PF_vr_cos (void)
+{
+	G_FLOAT (OFS_RETURN) = cosf (G_FLOAT (OFS_PARM0));
+}
+static void PF_vr_tan (void)
+{
+	G_FLOAT (OFS_RETURN) = tanf (G_FLOAT (OFS_PARM0));
+}
+static void PF_vr_asin (void)
+{
+	G_FLOAT (OFS_RETURN) = asinf (CLAMP (-1.0f, G_FLOAT (OFS_PARM0), 1.0f));
+}
+static void PF_vr_acos (void)
+{
+	G_FLOAT (OFS_RETURN) = acosf (CLAMP (-1.0f, G_FLOAT (OFS_PARM0), 1.0f));
+}
+static void PF_vr_atan (void)
+{
+	G_FLOAT (OFS_RETURN) = atanf (G_FLOAT (OFS_PARM0));
+}
+static void PF_vr_atan2 (void)
+{
+	G_FLOAT (OFS_RETURN) = atan2f (G_FLOAT (OFS_PARM0), G_FLOAT (OFS_PARM1));
+}
+static void PF_vr_sqrt (void)
+{
+	const float v = G_FLOAT (OFS_PARM0);
+	G_FLOAT (OFS_RETURN) = v > 0.0f ? sqrtf (v) : 0.0f;
+}
+
+// Remaps a value from one range to another. quakevr uses this throughout its
+// input handling to turn raw analog values into gameplay quantities.
+static void PF_vr_maprange (void)
+{
+	const float v = G_FLOAT (OFS_PARM0);
+	const float i0 = G_FLOAT (OFS_PARM1), i1 = G_FLOAT (OFS_PARM2);
+	const float o0 = G_FLOAT (OFS_PARM3), o1 = G_FLOAT (OFS_PARM4);
+
+	if (i1 == i0)
+	{
+		G_FLOAT (OFS_RETURN) = o0;
+		return;
+	}
+	G_FLOAT (OFS_RETURN) = o0 + (v - i0) * (o1 - o0) / (i1 - i0);
+}
+
+// Like makevectors, but only produces v_forward.
+static void PF_vr_makeforward (void)
+{
+	vec3_t angles, fwd, right, up;
+	VectorCopy (G_VECTOR (OFS_PARM0), angles);
+	AngleVectors (angles, fwd, right, up);
+	VectorCopy (fwd, pr_global_struct->v_forward);
+}
+
+// Projects one vector onto another.
+static void PF_vr_redirectvector (void)
+{
+	vec3_t input, exemplar, out;
+	float  d;
+
+	VectorCopy (G_VECTOR (OFS_PARM0), input);
+	VectorCopy (G_VECTOR (OFS_PARM1), exemplar);
+
+	d = DotProduct (input, exemplar);
+	VectorScale (exemplar, d, out);
+	G_VECTOR (OFS_RETURN)[0] = out[0];
+	G_VECTOR (OFS_RETURN)[1] = out[1];
+	G_VECTOR (OFS_RETURN)[2] = out[2];
+}
+
+// Rotates a vector by a set of Quake angles.
+static void PF_vr_rotatevec (void)
+{
+	vec3_t v, angles, fwd, right, up, out;
+
+	VectorCopy (G_VECTOR (OFS_PARM0), v);
+	VectorCopy (G_VECTOR (OFS_PARM1), angles);
+	AngleVectors (angles, fwd, right, up);
+
+	out[0] = v[0] * fwd[0] + v[1] * right[0] + v[2] * up[0];
+	out[1] = v[0] * fwd[1] + v[1] * right[1] + v[2] * up[1];
+	out[2] = v[0] * fwd[2] + v[1] * right[2] + v[2] * up[2];
+
+	G_VECTOR (OFS_RETURN)[0] = out[0];
+	G_VECTOR (OFS_RETURN)[1] = out[1];
+	G_VECTOR (OFS_RETURN)[2] = out[2];
+}
+
+// Launch angle needed to lob a projectile from one point to another.
+static void PF_vr_calcthrowangle (void)
+{
+	vec3_t from, to, delta;
+	float  speed, gravity, dist, dz, s2, disc;
+
+	VectorCopy (G_VECTOR (OFS_PARM0), from);
+	VectorCopy (G_VECTOR (OFS_PARM1), to);
+	speed = G_FLOAT (OFS_PARM2);
+	gravity = G_FLOAT (OFS_PARM3);
+
+	VectorSubtract (to, from, delta);
+	dz = delta[2];
+	delta[2] = 0;
+	dist = VectorLength (delta);
+
+	if (dist < 0.001f || speed < 0.001f || gravity <= 0.0f)
+	{
+		G_FLOAT (OFS_RETURN) = 0;
+		return;
+	}
+
+	s2 = speed * speed;
+	disc = s2 * s2 - gravity * (gravity * dist * dist + 2.0f * dz * s2);
+	if (disc < 0.0f)
+	{
+		G_FLOAT (OFS_RETURN) = 0; // out of range: no solution
+		return;
+	}
+
+	// the shallower of the two arcs
+	G_FLOAT (OFS_RETURN) = atanf ((s2 - sqrtf (disc)) / (gravity * dist));
+}
+
+// --- strings ---
+static void PF_vr_strlen (void)
+{
+	G_FLOAT (OFS_RETURN) = (float)strlen (G_STRING (OFS_PARM0));
+}
+
+static void PF_vr_nthchar (void)
+{
+	const char *s = G_STRING (OFS_PARM0);
+	const int	n = (int)G_FLOAT (OFS_PARM1);
+	char	   *out = PR_GetTempString ();
+
+	if (n < 0 || n >= (int)strlen (s))
+		out[0] = 0;
+	else
+	{
+		out[0] = s[n];
+		out[1] = 0;
+	}
+	G_INT (OFS_RETURN) = PR_SetEngineString (out);
+}
+
+static void PF_vr_substr (void)
+{
+	const char *s = G_STRING (OFS_PARM0);
+	int			start = (int)G_FLOAT (OFS_PARM1);
+	int			len = (int)G_FLOAT (OFS_PARM2);
+	const int	slen = (int)strlen (s);
+	char	   *out = PR_GetTempString ();
+
+	if (start < 0)
+		start = 0;
+	if (start > slen)
+		start = slen;
+	if (len < 0 || start + len > slen)
+		len = slen - start;
+	if (len > STRINGTEMP_LENGTH - 1)
+		len = STRINGTEMP_LENGTH - 1;
+
+	memcpy (out, s + start, len);
+	out[len] = 0;
+	G_INT (OFS_RETURN) = PR_SetEngineString (out);
+}
+
+// --- engine hooks ---
+static void PF_vr_haptic (void)
+{
+	VR_XR_Haptic ((int)G_FLOAT (OFS_PARM0), G_FLOAT (OFS_PARM2), G_FLOAT (OFS_PARM3), G_FLOAT (OFS_PARM4));
+}
+
+static void PF_vr_particle2 (void)
+{
+	// quakevr's preset-driven particle effect. vkQuake has no preset system, so
+	// fall back to the stock effect rather than dropping it entirely.
+	vec3_t org, dir;
+	VectorCopy (G_VECTOR (OFS_PARM0), org);
+	VectorCopy (G_VECTOR (OFS_PARM1), dir);
+	SV_StartParticle (org, dir, 0, (int)G_FLOAT (OFS_PARM3));
+}
+
+static void PF_vr_WriteVec3 (void)
+{
+	G_FLOAT (OFS_RETURN) = 0; // network writes for VR state are not wired up yet
 }
 
 static void PF_checkbuiltin (void)

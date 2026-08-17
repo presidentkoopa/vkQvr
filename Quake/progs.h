@@ -409,6 +409,11 @@ struct pr_extfields_s
 	QCEXTFIELD (handtouch_hand, ".float")								       \
 	QCEXTFIELD (handtouch_ent, ".entity")								       \
 	QCEXTFIELD (ishuman, ".float")										       \
+	/* the three non-VR fields quakevr also appends to its system block; moving \
+	   them out here is what lets its QC compile back down to the stock CRC */  \
+	QCEXTFIELD (v_viewangle, ".vector") /*head look dir, distinct from v_angle*/\
+	QCEXTFIELD (ammocounter, ".float")									       \
+	QCEXTFIELD (lastwatertime, ".float")								       \
 																	 // end of list
 
 #define QCEXTFIELD(n, t) int n;
