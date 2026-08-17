@@ -42,6 +42,7 @@ static void XR_DestroySession (void);
 static void XR_AcquireEyes (void);
 static void XR_UpdateRoomscale (void);
 static void XR_InitHandTracking (void);
+static int	XR_ComputeHotSpot (const vec3_t hand_world, const vec3_t player_origin);
 static void VR_XR_Calibrate_f (void);
 static void VR_XR_Recenter_f (void);
 
@@ -212,6 +213,22 @@ void VR_XR_Init (void)
 	Cvar_RegisterVariable (&vr_teleport_enabled);
 	Cvar_RegisterVariable (&vr_teleport_range);
 	Cvar_RegisterVariable (&vr_gun_wall_collision);
+
+	Cvar_RegisterVariable (&vr_shoulder_offset_x);
+	Cvar_RegisterVariable (&vr_shoulder_offset_y);
+	Cvar_RegisterVariable (&vr_shoulder_offset_z);
+	Cvar_RegisterVariable (&vr_hip_offset_x);
+	Cvar_RegisterVariable (&vr_hip_offset_y);
+	Cvar_RegisterVariable (&vr_hip_offset_z);
+	Cvar_RegisterVariable (&vr_hip_holster_thresh);
+	Cvar_RegisterVariable (&vr_shoulder_holster_offset_x);
+	Cvar_RegisterVariable (&vr_shoulder_holster_offset_y);
+	Cvar_RegisterVariable (&vr_shoulder_holster_offset_z);
+	Cvar_RegisterVariable (&vr_shoulder_holster_thresh);
+	Cvar_RegisterVariable (&vr_upper_holster_offset_x);
+	Cvar_RegisterVariable (&vr_upper_holster_offset_y);
+	Cvar_RegisterVariable (&vr_upper_holster_offset_z);
+	Cvar_RegisterVariable (&vr_upper_holster_thresh);
 
 	// vkQuake ships gamma 0.9 / contrast 1.4, a brightened look tuned for a
 	// monitor. quakevr runs both at 1 (gl_vidsdl.cpp:150-152); applied to a
@@ -3047,6 +3064,16 @@ void VR_XR_WriteEdictFields (edict_t *ed)
 	XR_SetVector (ed, f->headvel, head_v);
 	XR_SetFloat (ed, f->vryaw, cl.viewangles[YAW]);
 
+	// Which holster each hand is at, if any. This is the whole engine-side
+	// contribution to holsters; the QC stores and swaps the weapons itself.
+	{
+		vec3_t hw, ha, hv;
+		XR_HandToWorld (&vr_xr_hand[main_hand], origin, hw, ha, hv);
+		XR_SetFloat (ed, f->mainhand_hotspot, (float)XR_ComputeHotSpot (hw, origin));
+		XR_HandToWorld (&vr_xr_hand[off_hand], origin, hw, ha, hv);
+		XR_SetFloat (ed, f->offhand_hotspot, (float)XR_ComputeHotSpot (hw, origin));
+	}
+
 	// Teleport destination, consumed once. quakevr latches it the same way
 	// (vr.cpp:4449-4452) so the QC performs the move on exactly one frame.
 	if (xr_send_teleport)
@@ -3329,6 +3356,112 @@ void VR_XR_ResolveGunCollision (vec3_t hand_pos, const vec3_t hand_angles, float
 		PR_SwitchQCVM (NULL);
 		PR_SwitchQCVM (old_vm);
 	}
+}
+
+/*
+================================================================================
+
+	HOLSTER HOTSPOTS
+
+	Holsters are places on the player's body: reach to your shoulder, hip or
+	chest and grab. The engine's job is only to report which spot a hand is
+	near; quakevr's QC does the rest, storing and swapping the weapons.
+
+	Anchors are computed relative to the player's body yaw so they follow the
+	player around rather than sitting at fixed world positions. Offsets and
+	thresholds are quakevr's (vr_cvars.cpp:92-122).
+
+================================================================================
+*/
+
+cvar_t vr_shoulder_offset_x = {"vr_shoulder_offset_x", "-1.5", CVAR_ARCHIVE};
+cvar_t vr_shoulder_offset_y = {"vr_shoulder_offset_y", "1.75", CVAR_ARCHIVE};
+cvar_t vr_shoulder_offset_z = {"vr_shoulder_offset_z", "16.0", CVAR_ARCHIVE};
+
+cvar_t vr_hip_offset_x = {"vr_hip_offset_x", "-1.0", CVAR_ARCHIVE};
+cvar_t vr_hip_offset_y = {"vr_hip_offset_y", "7.0", CVAR_ARCHIVE};
+cvar_t vr_hip_offset_z = {"vr_hip_offset_z", "4.5", CVAR_ARCHIVE};
+cvar_t vr_hip_holster_thresh = {"vr_hip_holster_thresh", "6.0", CVAR_ARCHIVE};
+
+cvar_t vr_shoulder_holster_offset_x = {"vr_shoulder_holster_offset_x", "5.0", CVAR_ARCHIVE};
+cvar_t vr_shoulder_holster_offset_y = {"vr_shoulder_holster_offset_y", "1.5", CVAR_ARCHIVE};
+cvar_t vr_shoulder_holster_offset_z = {"vr_shoulder_holster_offset_z", "0.0", CVAR_ARCHIVE};
+cvar_t vr_shoulder_holster_thresh = {"vr_shoulder_holster_thresh", "8.0", CVAR_ARCHIVE};
+
+cvar_t vr_upper_holster_offset_x = {"vr_upper_holster_offset_x", "2.5", CVAR_ARCHIVE};
+cvar_t vr_upper_holster_offset_y = {"vr_upper_holster_offset_y", "6.5", CVAR_ARCHIVE};
+cvar_t vr_upper_holster_offset_z = {"vr_upper_holster_offset_z", "2.5", CVAR_ARCHIVE};
+cvar_t vr_upper_holster_thresh = {"vr_upper_holster_thresh", "6.0", CVAR_ARCHIVE};
+
+/*
+===============
+XR_BodyAnchor
+
+Turns a body-relative offset into a world position, rotated by the player's
+facing. y is mirrored for the left side. (quakevr VR_GetBodyAnchor, vr.cpp:2221)
+===============
+*/
+static void XR_BodyAnchor (const vec3_t player_origin, float ox, float oy, float oz, vec3_t out)
+{
+	const float yaw = DEG2RAD (cl.viewangles[YAW]);
+	const float s = sinf (yaw), c = cosf (yaw);
+
+	out[0] = player_origin[0] + ox * c - oy * s;
+	out[1] = player_origin[1] + ox * s + oy * c;
+	out[2] = player_origin[2] + oz;
+}
+
+static float XR_Dist (const vec3_t a, const vec3_t b)
+{
+	vec3_t d;
+	VectorSubtract (a, b, d);
+	return VectorLength (d);
+}
+
+/*
+===============
+XR_ComputeHotSpot
+
+Order matters and follows quakevr's (vr.cpp:4504-4553): shoulders, then hips,
+then upper/chest. First match wins.
+===============
+*/
+static int XR_ComputeHotSpot (const vec3_t hand_world, const vec3_t player_origin)
+{
+	vec3_t spot;
+
+	// shoulders: base shoulder offset plus the holster offset outboard of it
+	XR_BodyAnchor (
+		player_origin, vr_shoulder_offset_x.value + vr_shoulder_holster_offset_x.value,
+		-(vr_shoulder_offset_y.value + vr_shoulder_holster_offset_y.value), vr_shoulder_offset_z.value + vr_shoulder_holster_offset_z.value, spot);
+	if (XR_Dist (hand_world, spot) < vr_shoulder_holster_thresh.value)
+		return QVR_HS_LEFT_SHOULDER_HOLSTER;
+
+	XR_BodyAnchor (
+		player_origin, vr_shoulder_offset_x.value + vr_shoulder_holster_offset_x.value,
+		vr_shoulder_offset_y.value + vr_shoulder_holster_offset_y.value, vr_shoulder_offset_z.value + vr_shoulder_holster_offset_z.value, spot);
+	if (XR_Dist (hand_world, spot) < vr_shoulder_holster_thresh.value)
+		return QVR_HS_RIGHT_SHOULDER_HOLSTER;
+
+	// hips
+	XR_BodyAnchor (player_origin, vr_hip_offset_x.value, -vr_hip_offset_y.value, vr_hip_offset_z.value, spot);
+	if (XR_Dist (hand_world, spot) < vr_hip_holster_thresh.value)
+		return QVR_HS_LEFT_HIP_HOLSTER;
+
+	XR_BodyAnchor (player_origin, vr_hip_offset_x.value, vr_hip_offset_y.value, vr_hip_offset_z.value, spot);
+	if (XR_Dist (hand_world, spot) < vr_hip_holster_thresh.value)
+		return QVR_HS_RIGHT_HIP_HOLSTER;
+
+	// upper / chest
+	XR_BodyAnchor (player_origin, vr_upper_holster_offset_x.value, -vr_upper_holster_offset_y.value, vr_upper_holster_offset_z.value, spot);
+	if (XR_Dist (hand_world, spot) < vr_upper_holster_thresh.value)
+		return QVR_HS_LEFT_UPPER_HOLSTER;
+
+	XR_BodyAnchor (player_origin, vr_upper_holster_offset_x.value, vr_upper_holster_offset_y.value, vr_upper_holster_offset_z.value, spot);
+	if (XR_Dist (hand_world, spot) < vr_upper_holster_thresh.value)
+		return QVR_HS_RIGHT_UPPER_HOLSTER;
+
+	return QVR_HS_NONE;
 }
 
 /*

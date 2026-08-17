@@ -260,6 +260,24 @@ extern cvar_t vr_teleport_enabled;
 extern cvar_t vr_teleport_range;
 extern cvar_t vr_gun_wall_collision;
 
+// Holster hotspot ids. Values are quakevr's (quakedef_macros.hpp:286-295) --
+// its QC compares against these numbers directly, so they are a contract.
+#define QVR_HS_NONE					 0
+#define QVR_HS_OFFHAND_2H_GRAB		 1
+#define QVR_HS_MAINHAND_2H_GRAB		 2
+#define QVR_HS_LEFT_SHOULDER_HOLSTER 3
+#define QVR_HS_RIGHT_SHOULDER_HOLSTER 4
+#define QVR_HS_LEFT_HIP_HOLSTER		 5
+#define QVR_HS_RIGHT_HIP_HOLSTER	 6
+#define QVR_HS_HAND_SWITCH			 7
+#define QVR_HS_LEFT_UPPER_HOLSTER	 8
+#define QVR_HS_RIGHT_UPPER_HOLSTER	 9
+
+extern cvar_t vr_shoulder_offset_x, vr_shoulder_offset_y, vr_shoulder_offset_z;
+extern cvar_t vr_hip_offset_x, vr_hip_offset_y, vr_hip_offset_z, vr_hip_holster_thresh;
+extern cvar_t vr_shoulder_holster_offset_x, vr_shoulder_holster_offset_y, vr_shoulder_holster_offset_z, vr_shoulder_holster_thresh;
+extern cvar_t vr_upper_holster_offset_x, vr_upper_holster_offset_y, vr_upper_holster_offset_z, vr_upper_holster_thresh;
+
 // Pulls the hand back so the muzzle stops at a wall instead of poking through
 // it -- which otherwise lets the player shoot around corners from cover.
 void VR_XR_ResolveGunCollision (vec3_t hand_pos, const vec3_t hand_angles, float muzzle_len);
