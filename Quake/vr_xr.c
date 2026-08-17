@@ -81,6 +81,72 @@ cvar_t vr_wpn_offsets = {"vr_wpn_offsets", "1", CVAR_ARCHIVE};
 cvar_t vr_gunangle = {"vr_gunangle", "0", CVAR_ARCHIVE};
 cvar_t vr_gunyaw = {"vr_gunyaw", "0", CVAR_ARCHIVE};
 cvar_t vr_gun_z_offset = {"vr_gun_z_offset", "0", CVAR_ARCHIVE};
+/*
+================================================================================
+
+	CVARS READ BY THE QUAKEC
+
+	quakevr implements a lot of its gameplay in QuakeC rather than the engine,
+	and that QC reaches back for its tuning through cvar_hmake/cvar_hget. Every
+	name below is one the ported QC binds in VR_CVars_InitAllHandles: without an
+	engine-side cvar to bind to, the handle resolves to nothing and the feature
+	reads as 0 and quietly does nothing.
+
+	That was the state of force grab, melee tuning, positional damage, enemy and
+	ammo box drops, headbutting, holster mode, reload mode, weapon cycling and
+	2H spread -- all of them already compiled into the QC and all of them dead.
+	vr_enabled mattered most of all, being the flag the QC tests to decide
+	whether it is in VR at all.
+
+	Defaults are quakevr's, from vr_cvars.cpp.
+
+================================================================================
+*/
+
+// The QC's "am I in VR" flag. Not archived, and not user-set: the engine
+// drives it from the real session state. (vr_cvars.cpp, DEFINE_FCVAR)
+cvar_t vr_enabled = {"vr_enabled", "0", CVAR_NONE};
+cvar_t vr_fakevr = {"vr_fakevr", "0", CVAR_NONE};
+
+// force grab -- pulling items to the hand
+cvar_t vr_forcegrab_mode = {"vr_forcegrab_mode", "1", CVAR_ARCHIVE};
+cvar_t vr_forcegrab_powermult = {"vr_forcegrab_powermult", "0.75", CVAR_ARCHIVE};
+cvar_t vr_forcegrab_range = {"vr_forcegrab_range", "150.0", CVAR_ARCHIVE};
+cvar_t vr_forcegrab_radius = {"vr_forcegrab_radius", "18.0", CVAR_ARCHIVE};
+cvar_t vr_forcegrab_eligible_particles = {"vr_forcegrab_eligible_particles", "1", CVAR_ARCHIVE};
+cvar_t vr_forcegrab_eligible_haptics = {"vr_forcegrab_eligible_haptics", "1", CVAR_ARCHIVE};
+cvar_t vr_forcegrabbable_ammo_boxes = {"vr_forcegrabbable_ammo_boxes", "1", CVAR_ARCHIVE};
+cvar_t vr_forcegrabbable_health_boxes = {"vr_forcegrabbable_health_boxes", "1", CVAR_ARCHIVE};
+cvar_t vr_forcegrabbable_return_time_deathmatch = {"vr_forcegrabbable_return_time_deathmatch", "4", CVAR_ARCHIVE};
+cvar_t vr_forcegrabbable_return_time_singleplayer = {"vr_forcegrabbable_return_time_singleplayer", "0", CVAR_ARCHIVE};
+
+// melee
+cvar_t vr_melee_dmg_multiplier = {"vr_melee_dmg_multiplier", "1.0", CVAR_ARCHIVE};
+cvar_t vr_melee_range_multiplier = {"vr_melee_range_multiplier", "1.0", CVAR_ARCHIVE};
+cvar_t vr_melee_bloodlust = {"vr_melee_bloodlust", "0", CVAR_ARCHIVE};
+cvar_t vr_melee_bloodlust_mult = {"vr_melee_bloodlust_mult", "1.0", CVAR_ARCHIVE};
+
+// headbutting
+cvar_t vr_headbutt_damage_mult = {"vr_headbutt_damage_mult", "32", CVAR_ARCHIVE};
+cvar_t vr_headbutt_velocity_threshold = {"vr_headbutt_velocity_threshold", "2.02", CVAR_ARCHIVE};
+
+// drops from enemies and ammo boxes
+cvar_t vr_enemy_drops = {"vr_enemy_drops", "0", CVAR_ARCHIVE};
+cvar_t vr_enemy_drops_chance_mult = {"vr_enemy_drops_chance_mult", "1.0", CVAR_ARCHIVE};
+cvar_t vr_ammobox_drops = {"vr_ammobox_drops", "0", CVAR_ARCHIVE};
+cvar_t vr_ammobox_drops_chance_mult = {"vr_ammobox_drops_chance_mult", "1.0", CVAR_ARCHIVE};
+
+// handling
+cvar_t vr_positional_damage = {"vr_positional_damage", "1", CVAR_ARCHIVE};
+cvar_t vr_holster_mode = {"vr_holster_mode", "0", CVAR_ARCHIVE};
+cvar_t vr_holster_haptics = {"vr_holster_haptics", "1", CVAR_ARCHIVE};
+cvar_t vr_reload_mode = {"vr_reload_mode", "2", CVAR_ARCHIVE};
+cvar_t vr_weapon_cycle_mode = {"vr_weapon_cycle_mode", "0", CVAR_ARCHIVE};
+cvar_t vr_weapondrop_particles = {"vr_weapondrop_particles", "1", CVAR_ARCHIVE};
+cvar_t vr_2h_spread_reduction = {"vr_2h_spread_reduction", "0.5", CVAR_ARCHIVE};
+cvar_t vr_2h_throw_velocity_mult = {"vr_2h_throw_velocity_mult", "1.4", CVAR_ARCHIVE};
+cvar_t vr_verbosebots = {"vr_verbosebots", "0", CVAR_ARCHIVE};
+
 cvar_t vr_finger_grip_bias = {"vr_finger_grip_bias", "0.0", CVAR_ARCHIVE};
 cvar_t vr_finger_auto_close_thumb = {"vr_finger_auto_close_thumb", "1", CVAR_ARCHIVE};
 cvar_t vr_finger_blending = {"vr_finger_blending", "1", CVAR_ARCHIVE};
@@ -278,6 +344,40 @@ void VR_XR_Init (void)
 	Cvar_SetQuick (&vid_contrast, "1");
 
 	Cmd_AddCommand ("vr_calibrate", VR_XR_Calibrate_f);
+	// The QuakeC binds all of these by name; see the block where they are
+	// defined for why every one of them has to exist.
+	Cvar_RegisterVariable (&vr_enabled);
+	Cvar_RegisterVariable (&vr_fakevr);
+	Cvar_RegisterVariable (&vr_forcegrab_mode);
+	Cvar_RegisterVariable (&vr_forcegrab_powermult);
+	Cvar_RegisterVariable (&vr_forcegrab_range);
+	Cvar_RegisterVariable (&vr_forcegrab_radius);
+	Cvar_RegisterVariable (&vr_forcegrab_eligible_particles);
+	Cvar_RegisterVariable (&vr_forcegrab_eligible_haptics);
+	Cvar_RegisterVariable (&vr_forcegrabbable_ammo_boxes);
+	Cvar_RegisterVariable (&vr_forcegrabbable_health_boxes);
+	Cvar_RegisterVariable (&vr_forcegrabbable_return_time_deathmatch);
+	Cvar_RegisterVariable (&vr_forcegrabbable_return_time_singleplayer);
+	Cvar_RegisterVariable (&vr_melee_dmg_multiplier);
+	Cvar_RegisterVariable (&vr_melee_range_multiplier);
+	Cvar_RegisterVariable (&vr_melee_bloodlust);
+	Cvar_RegisterVariable (&vr_melee_bloodlust_mult);
+	Cvar_RegisterVariable (&vr_headbutt_damage_mult);
+	Cvar_RegisterVariable (&vr_headbutt_velocity_threshold);
+	Cvar_RegisterVariable (&vr_enemy_drops);
+	Cvar_RegisterVariable (&vr_enemy_drops_chance_mult);
+	Cvar_RegisterVariable (&vr_ammobox_drops);
+	Cvar_RegisterVariable (&vr_ammobox_drops_chance_mult);
+	Cvar_RegisterVariable (&vr_positional_damage);
+	Cvar_RegisterVariable (&vr_holster_mode);
+	Cvar_RegisterVariable (&vr_holster_haptics);
+	Cvar_RegisterVariable (&vr_reload_mode);
+	Cvar_RegisterVariable (&vr_weapon_cycle_mode);
+	Cvar_RegisterVariable (&vr_weapondrop_particles);
+	Cvar_RegisterVariable (&vr_2h_spread_reduction);
+	Cvar_RegisterVariable (&vr_2h_throw_velocity_mult);
+	Cvar_RegisterVariable (&vr_verbosebots);
+
 	Cmd_AddCommand ("vr_recenter", VR_XR_Recenter_f);
 	Cmd_AddCommand ("vr_scaledump", VR_XR_ScaleDump_f);
 
@@ -848,7 +948,16 @@ VR_XR_SessionRunning
 */
 qboolean VR_XR_SessionRunning (void)
 {
-	return vr_xr_active && xr_session_running;
+	const qboolean running = vr_xr_active && xr_session_running;
+
+	// Mirror the real state into the cvar the QuakeC reads. The QC tests
+	// vr_enabled to decide whether it is in VR at all, so it gates nearly every
+	// VR behaviour in there; it is driven from here rather than being set once
+	// at startup so that taking the headset off is reflected honestly.
+	if ((vr_enabled.value != 0.0f) != (running != 0))
+		Cvar_SetValueQuick (&vr_enabled, running ? 1.0f : 0.0f);
+
+	return running;
 }
 
 /*
