@@ -386,6 +386,17 @@ static void SV_TouchLinks (edict_t *ent)
 		// edicts later in the list no longer touch
 		if (touch->free || touch == ent)
 			continue;
+
+		// VR hand-touch runs before, and independently of, the normal trigger
+		// test: reaching for something is how it gets picked up, and the target
+		// need not be a SOLID_TRIGGER for that. (quakevr world.cpp:513-516)
+		if ((int)ent->v.flags & FL_CLIENT)
+		{
+			VR_XR_HandTouch (ent, touch);
+			if (ent->free || touch->free)
+				continue;
+		}
+
 		if (!touch->v.touch || touch->v.solid != SOLID_TRIGGER)
 			continue;
 		if (ent->v.absmin[0] > touch->v.absmax[0] || ent->v.absmin[1] > touch->v.absmax[1] || ent->v.absmin[2] > touch->v.absmax[2] ||

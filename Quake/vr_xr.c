@@ -160,6 +160,7 @@ void VR_XR_Init (void)
 	Cvar_RegisterVariable (&vr_height_calibration);
 	Cvar_RegisterVariable (&vr_gunmodelscale);
 	Cvar_RegisterVariable (&vr_gunmodely);
+	Cvar_RegisterVariable (&vr_body_interactions);
 
 	// vkQuake ships gamma 0.9 / contrast 1.4, a brightened look tuned for a
 	// monitor. quakevr runs both at 1 (gl_vidsdl.cpp:150-152); applied to a
@@ -2625,6 +2626,115 @@ void VR_XR_WriteEdictFields (edict_t *ed)
 	}
 
 	XR_SetFloat (ed, f->ishuman, 1.0f);
+}
+
+/*
+===============
+VR_XR_HandTouch
+
+Reaching for something is how you pick it up in VR, so items cannot rely on the
+player's body walking through them. quakevr adds a second touch path driven by
+the hand positions, and its QC hangs holsters, force-grab and item pickup off
+the .handtouch field it invokes. Ported from quakevr world.cpp:448-503.
+===============
+*/
+
+// quakevr allows body-based interaction as an option (vr_cvars.cpp)
+cvar_t vr_body_interactions = {"vr_body_interactions", "0", CVAR_ARCHIVE};
+
+// hands are given some size so they do not have to be pixel-perfect
+#define VR_HAND_TOUCH_SIZE 2.5f
+// and flagged entities get more, so awkward pickups stay reachable
+// (quakevr VR_GetEasyHandTouchBonus, vr.cpp:624-627)
+#define VR_EASY_HAND_TOUCH_BONUS 4.5f
+
+static qboolean XR_BoxIntersect (const vec3_t amin, const vec3_t amax, const vec3_t bmin, const vec3_t bmax)
+{
+	if (amin[0] > bmax[0] || amin[1] > bmax[1] || amin[2] > bmax[2])
+		return false;
+	if (amax[0] < bmin[0] || amax[1] < bmin[1] || amax[2] < bmin[2])
+		return false;
+	return true;
+}
+
+void VR_XR_HandTouch (edict_t *ent, edict_t *target)
+{
+	const struct pr_extfields_s *f;
+	eval_t						*handtouch;
+	eval_t						*hp;
+	eval_t						*ohp;
+	vec3_t						 hmin, hmax, tmin, tmax;
+	float						 bonus;
+	qboolean					 off_hit = false, main_hit = false;
+	int							 old_self, old_other;
+
+	if (!ent || !target || !qcvm)
+		return;
+
+	f = &qcvm->extfields;
+	if (f->handtouch < 0)
+		return; // this progs.dat has no .handtouch; nothing to call
+
+	// quakevr: canBeHandTouched -- must have the callback and be solid
+	// (util.hpp:298-302)
+	handtouch = GetEdictFieldValue (target, f->handtouch);
+	if (!handtouch || !handtouch->function || target->v.solid == SOLID_NOT)
+		return;
+
+	hp = (f->handpos >= 0) ? GetEdictFieldValue (ent, f->handpos) : NULL;
+	ohp = (f->offhandpos >= 0) ? GetEdictFieldValue (ent, f->offhandpos) : NULL;
+	if (!hp && !ohp)
+		return;
+
+	// the flag is on the thing being grabbed, not the grabber
+	bonus = ((int)target->v.flags & FL_EASYHANDTOUCH) ? VR_EASY_HAND_TOUCH_BONUS : 0.0f;
+
+	tmin[0] = target->v.absmin[0] - bonus;
+	tmin[1] = target->v.absmin[1] - bonus;
+	tmin[2] = target->v.absmin[2] - bonus;
+	tmax[0] = target->v.absmax[0] + bonus;
+	tmax[1] = target->v.absmax[1] + bonus;
+	tmax[2] = target->v.absmax[2] + bonus;
+
+	if (ohp)
+	{
+		hmin[0]=ohp->vector[0]-VR_HAND_TOUCH_SIZE; hmin[1]=ohp->vector[1]-VR_HAND_TOUCH_SIZE; hmin[2]=ohp->vector[2]-VR_HAND_TOUCH_SIZE;
+		hmax[0]=ohp->vector[0]+VR_HAND_TOUCH_SIZE; hmax[1]=ohp->vector[1]+VR_HAND_TOUCH_SIZE; hmax[2]=ohp->vector[2]+VR_HAND_TOUCH_SIZE;
+		off_hit = XR_BoxIntersect (hmin, hmax, tmin, tmax);
+	}
+	if (hp)
+	{
+		hmin[0]=hp->vector[0]-VR_HAND_TOUCH_SIZE; hmin[1]=hp->vector[1]-VR_HAND_TOUCH_SIZE; hmin[2]=hp->vector[2]-VR_HAND_TOUCH_SIZE;
+		hmax[0]=hp->vector[0]+VR_HAND_TOUCH_SIZE; hmax[1]=hp->vector[1]+VR_HAND_TOUCH_SIZE; hmax[2]=hp->vector[2]+VR_HAND_TOUCH_SIZE;
+		main_hit = XR_BoxIntersect (hmin, hmax, tmin, tmax);
+	}
+
+	if (!off_hit && !main_hit)
+		return;
+
+	// tell the QC which hand did it (quakevr VR_SetHandtouchParams, vr.cpp:678-683)
+	{
+		const int hand = off_hit ? 0 : 1;
+		XR_SetFloat (ent, f->touchinghand, (float)hand);
+		XR_SetFloat (target, f->handtouch_hand, (float)hand);
+		if (f->handtouch_ent >= 0)
+		{
+			eval_t *he = GetEdictFieldValue (target, f->handtouch_ent);
+			if (he)
+				he->edict = EDICT_TO_PROG (ent);
+		}
+	}
+
+	old_self = pr_global_struct->self;
+	old_other = pr_global_struct->other;
+
+	pr_global_struct->self = EDICT_TO_PROG (target);
+	pr_global_struct->other = EDICT_TO_PROG (ent);
+	pr_global_struct->time = qcvm->time;
+	PR_ExecuteProgram (handtouch->function);
+
+	pr_global_struct->self = old_self;
+	pr_global_struct->other = old_other;
 }
 
 /*

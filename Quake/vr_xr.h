@@ -215,4 +215,16 @@ void VR_XR_ModAllWeapons (void);
 struct edict_s;
 void VR_XR_WriteEdictFields (struct edict_s *ed);
 
+// Runs the hand-touch test between a player and a candidate entity, calling the
+// target's .handtouch when a hand is inside it. This is how items get picked up
+// by reaching for them rather than walking over them, and it is the entry point
+// every grab-based system in quakevr's QC hangs off.
+// (quakevr world.cpp:448-503)
+void VR_XR_HandTouch (struct edict_s *ent, struct edict_s *target);
+
+// adds bonus reach for entities flagged easy to grab (quakevr serverdefines.hpp:54)
+#define FL_EASYHANDTOUCH (1 << 13)
+
+extern cvar_t vr_body_interactions;
+
 #endif /* _VR_XR_H */
