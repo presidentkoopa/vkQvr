@@ -51,7 +51,21 @@ static void VR_XR_Recenter_f (void);
 // before the finger-tracking section defines them. Defaults are quakevr's
 // (vr_cvars.cpp:173-187).
 cvar_t vr_gun_debug = {"vr_gun_debug", "0", CVAR_NONE};
-cvar_t vr_gun_nooffset = {"vr_gun_nooffset", "0", CVAR_NONE};
+
+// quakevr's per-weapon offset table, off by default.
+//
+// The numbers are quakevr's verbatim, but they are measured relative to its
+// controller frame: OpenVR's raw pose plus a 32-degree correction. OpenXR's
+// aim pose is a different frame -- measured grip->aim here is roughly
+// (-26, -135, -93), nowhere near a 32-degree pitch -- so those offsets are
+// rotated into the wrong place. With ofs_z running from 10 to 41 units, that
+// is between one and five feet of displacement, which is what put the weapon
+// above the controller.
+//
+// Off, the model is drawn at the hand, which is correct to within the model's
+// own origin. Set to 1 to apply the table once it has been retuned for this
+// frame.
+cvar_t vr_wpn_offsets = {"vr_wpn_offsets", "0", CVAR_ARCHIVE};
 
 // Pre-rotation of the weapon relative to the controller. quakevr applies this
 // to the controller matrix before deriving handrot, and every offset in the
@@ -225,7 +239,7 @@ void VR_XR_Init (void)
 	Cvar_RegisterVariable (&vr_teleport_range);
 	Cvar_RegisterVariable (&vr_gun_wall_collision);
 	Cvar_RegisterVariable (&vr_gun_debug);
-	Cvar_RegisterVariable (&vr_gun_nooffset);
+	Cvar_RegisterVariable (&vr_wpn_offsets);
 	Cvar_RegisterVariable (&vr_hud_enabled);
 	Cvar_RegisterVariable (&vr_menu_scale);
 	Cvar_RegisterVariable (&vr_menu_distance);
@@ -2381,8 +2395,8 @@ void VR_XR_ApplyWeaponModelMod (aliashdr_t *hdr, const char *model_name)
 	correct = (vr_world_scale.value / 0.75f) * vr_gunmodelscale.value;
 
 	w = VR_FindWpnOffset (model_name);
-	if (vr_gun_nooffset.value)
-		w = NULL; // draw the model raw, to isolate the table from the position
+	if (!vr_wpn_offsets.value)
+		w = NULL; // table is authored in quakevr's frame; see the cvar note
 
 	// NB: deliberately not gated on the session running.
 	//
@@ -3680,6 +3694,9 @@ static void XR_SetupHandEntity (int hand, const vec3_t player_origin)
 	palm->frame = 0;
 	palm->colormap = vid.colormap;
 	palm->alpha = ENTALPHA_DEFAULT;
+	// Without this the model is scaled to nothing: these entities live in cl,
+	// which is memset on connect, and ENTSCALE_DECODE(0) is 0.
+	palm->netstate.scale = ENTSCALE_DEFAULT;
 
 	for (i = 0; i < 5; i++)
 	{
@@ -3692,6 +3709,7 @@ static void XR_SetupHandEntity (int hand, const vec3_t player_origin)
 		f->frame = (int)CLAMP (0.0f, h->finger[i], 5.0f);
 		f->colormap = vid.colormap;
 		f->alpha = ENTALPHA_DEFAULT;
+		f->netstate.scale = ENTSCALE_DEFAULT;
 	}
 }
 
@@ -3775,6 +3793,7 @@ static void XR_SetupOffHandWeapon (const vec3_t player_origin)
 	view->angles[PITCH] = -view->angles[PITCH];
 	view->colormap = vid.colormap;
 	view->alpha = ENTALPHA_DEFAULT;
+	view->netstate.scale = ENTSCALE_DEFAULT;
 }
 
 /*
@@ -3821,6 +3840,7 @@ void VR_XR_SetupBodyEntities (void)
 	cl.vrtorso.frame = 0;
 	cl.vrtorso.colormap = vid.colormap;
 	cl.vrtorso.alpha = ENTALPHA_DEFAULT;
+	cl.vrtorso.netstate.scale = ENTSCALE_DEFAULT;
 
 	VectorCopy (player->origin, cl.vrtorso.origin);
 	VectorMA (cl.vrtorso.origin, vr_vrtorso_x_offset.value, fwd, cl.vrtorso.origin);
