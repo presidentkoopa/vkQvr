@@ -1933,8 +1933,19 @@ void VR_XR_UpdateLaser (void)
 	vec3_t	  origin, angles, forward, right, up, end, impact;
 	dlight_t *dl;
 
-	if (!vr_laser.value || cls.state != ca_connected || cl.intermission)
+	// Every one of these has to hold before tracing. cls.state goes to
+	// ca_connected as soon as the connection is up, which is well before the
+	// map exists -- and TraceLine dereferences cl.worldmodel->hulls with no
+	// null check of its own, so running a frame early is an outright crash.
+	if (!vr_laser.value)
 		return;
+	if (cls.state != ca_connected || cls.signon != SIGNONS)
+		return;
+	if (!cl.worldmodel || cl.intermission)
+		return;
+	if (cl.viewentity <= 0 || cl.viewentity >= cl.max_edicts || !cl.entities)
+		return;
+
 	if (!VR_XR_WeaponPose (cl.entities[cl.viewentity].origin, origin, angles))
 		return;
 
