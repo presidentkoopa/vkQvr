@@ -120,6 +120,12 @@ typedef struct
 	vec3_t velocity; // Quake units/sec, from the runtime rather than differenced
 	float  speed;	 // magnitude of the above
 
+	// Rolling mean of recent velocity. Throwing uses this rather than the
+	// instantaneous value: the hand decelerates sharply as it releases, so a
+	// single frame under-reads the throw badly. (quakevr vr.cpp:1983-1990)
+	vec3_t throw_velocity;
+	vec3_t angular_velocity;
+
 	qboolean btn_a;		 // A / X
 	qboolean btn_b;		 // B / Y
 	qboolean btn_stick;	 // thumbstick click
@@ -226,5 +232,14 @@ void VR_XR_HandTouch (struct edict_s *ent, struct edict_s *target);
 #define FL_EASYHANDTOUCH (1 << 13)
 
 extern cvar_t vr_body_interactions;
+extern cvar_t vr_throw_avg_frames;
+extern cvar_t vr_throw_angvel_avg_frames;
+extern cvar_t vr_weapon_throw_velocity_mult;
+extern cvar_t vr_weapon_throw_damage_mult;
+extern cvar_t vr_weapon_throw_mode;
+
+// Clears throw velocity history, so a throw cannot inherit motion from before a
+// respawn, teleport or level change.
+void VR_XR_ResetThrowAvg (void);
 
 #endif /* _VR_XR_H */

@@ -161,6 +161,11 @@ void VR_XR_Init (void)
 	Cvar_RegisterVariable (&vr_gunmodelscale);
 	Cvar_RegisterVariable (&vr_gunmodely);
 	Cvar_RegisterVariable (&vr_body_interactions);
+	Cvar_RegisterVariable (&vr_throw_avg_frames);
+	Cvar_RegisterVariable (&vr_throw_angvel_avg_frames);
+	Cvar_RegisterVariable (&vr_weapon_throw_velocity_mult);
+	Cvar_RegisterVariable (&vr_weapon_throw_damage_mult);
+	Cvar_RegisterVariable (&vr_weapon_throw_mode);
 
 	// vkQuake ships gamma 0.9 / contrast 1.4, a brightened look tuned for a
 	// monitor. quakevr runs both at 1 (gl_vidsdl.cpp:150-152); applied to a
@@ -1373,6 +1378,79 @@ static XrSpace xr_aim_space[VR_HANDS] = {XR_NULL_HANDLE, XR_NULL_HANDLE};
 
 static qboolean xr_input_ready = false;
 
+// Velocity history for throwing. quakevr averages the last N frames because the
+// hand decelerates hard at the moment of release, so the instantaneous value at
+// release badly under-reads what the player actually did.
+// (quakevr vr.cpp:4708-4716, defaults from vr_cvars.cpp:178-179)
+#define VR_MAX_THROW_FRAMES 32
+static vec3_t xr_vel_history[VR_HANDS][VR_MAX_THROW_FRAMES];
+static vec3_t xr_avel_history[VR_HANDS][VR_MAX_THROW_FRAMES];
+static int	  xr_vel_head[VR_HANDS] = {0, 0};
+static int	  xr_vel_count[VR_HANDS] = {0, 0};
+
+/*
+===============
+XR_PushVelocitySample
+===============
+*/
+static void XR_PushVelocitySample (int hand, const vec3_t vel, const vec3_t avel)
+{
+	const int slot = xr_vel_head[hand];
+
+	VectorCopy (vel, xr_vel_history[hand][slot]);
+	VectorCopy (avel, xr_avel_history[hand][slot]);
+
+	xr_vel_head[hand] = (slot + 1) % VR_MAX_THROW_FRAMES;
+	if (xr_vel_count[hand] < VR_MAX_THROW_FRAMES)
+		xr_vel_count[hand]++;
+}
+
+/*
+===============
+XR_AverageVelocity
+
+Mean of the most recent `frames` samples, newest first.
+===============
+*/
+static void XR_AverageVelocity (int hand, int frames, vec3_t history[VR_HANDS][VR_MAX_THROW_FRAMES], vec3_t out)
+{
+	int i, n, idx;
+
+	out[0] = out[1] = out[2] = 0.0f;
+
+	n = q_min (frames, xr_vel_count[hand]);
+	if (n <= 0)
+		return;
+
+	for (i = 1; i <= n; i++)
+	{
+		idx = (xr_vel_head[hand] - i + VR_MAX_THROW_FRAMES) % VR_MAX_THROW_FRAMES;
+		out[0] += history[hand][idx][0];
+		out[1] += history[hand][idx][1];
+		out[2] += history[hand][idx][2];
+	}
+
+	out[0] /= (float)n;
+	out[1] /= (float)n;
+	out[2] /= (float)n;
+}
+
+/*
+===============
+VR_XR_ResetThrowAvg
+
+Clears the history, so a throw cannot inherit motion from before a teleport,
+respawn or level change. (quakevr VR_ResetThrowAvgFrames)
+===============
+*/
+void VR_XR_ResetThrowAvg (void)
+{
+	memset (xr_vel_history, 0, sizeof (xr_vel_history));
+	memset (xr_avel_history, 0, sizeof (xr_avel_history));
+	xr_vel_head[0] = xr_vel_head[1] = 0;
+	xr_vel_count[0] = xr_vel_count[1] = 0;
+}
+
 /*
 ===============
 XR_Path
@@ -1749,6 +1827,10 @@ void VR_XR_SyncInput (void)
 		h->tracked = XR_LocateHand (xr_pose_space[hand], xr_frame_state.predictedDisplayTime, h->pos, h->angles, h->velocity);
 		XR_LocateHand (xr_aim_space[hand], xr_frame_state.predictedDisplayTime, h->aim_pos, h->aim_angles, NULL);
 		h->speed = sqrtf (h->velocity[0] * h->velocity[0] + h->velocity[1] * h->velocity[1] + h->velocity[2] * h->velocity[2]);
+
+		// throwing reads a rolling mean, not this frame's value
+		XR_PushVelocitySample (hand, h->velocity, h->angular_velocity);
+		XR_AverageVelocity (hand, (int)vr_throw_avg_frames.value, xr_vel_history, h->throw_velocity);
 
 		h->trigger = XR_ReadFloat (xr_act_trigger, hand);
 		h->grip = XR_ReadFloat (xr_act_grip, hand);
@@ -2531,6 +2613,25 @@ gets the same treatment the view and the gun get: drop the room-scale movement
 already consumed, rotate by the body yaw, offset from the player.
 ===============
 */
+/*
+===============
+XR_HandVelToWorld
+
+Rotates a play-space velocity into the world by the player's body yaw. Position
+needs the extra offset work; a velocity only needs the rotation.
+===============
+*/
+static void XR_HandVelToWorld (const vr_hand_t *h, const vec3_t in, vec3_t out)
+{
+	const float yaw = DEG2RAD (cl.viewangles[YAW]);
+	const float s = sinf (yaw), c = cosf (yaw);
+
+	(void)h;
+	out[0] = in[0] * c - in[1] * s;
+	out[1] = in[0] * s + in[1] * c;
+	out[2] = in[2];
+}
+
 static void XR_HandToWorld (const vr_hand_t *h, const vec3_t player_origin, vec3_t out_pos, vec3_t out_angles, vec3_t out_vel)
 {
 	const float yaw = DEG2RAD (cl.viewangles[YAW]);
@@ -2581,8 +2682,14 @@ void VR_XR_WriteEdictFields (edict_t *ed)
 	XR_SetVector (ed, f->handpos, pos);
 	XR_SetVector (ed, f->handrot, ang);
 	XR_SetVector (ed, f->handvel, vel);
-	XR_SetVector (ed, f->handthrowvel, vel);
 	XR_SetFloat (ed, f->handvelmag, vr_xr_hand[main_hand].speed);
+	{
+		// averaged, then scaled -- the release frame alone under-reads a throw
+		vec3_t tv;
+		XR_HandVelToWorld (&vr_xr_hand[main_hand], vr_xr_hand[main_hand].throw_velocity, tv);
+		VectorScale (tv, vr_weapon_throw_velocity_mult.value, tv);
+		XR_SetVector (ed, f->handthrowvel, tv);
+	}
 	// the muzzle is the aim ray's origin, which is what weapons fire from
 	XR_SetVector (ed, f->muzzlepos, pos);
 
@@ -2591,8 +2698,13 @@ void VR_XR_WriteEdictFields (edict_t *ed)
 	XR_SetVector (ed, f->offhandpos, pos);
 	XR_SetVector (ed, f->offhandrot, ang);
 	XR_SetVector (ed, f->offhandvel, vel);
-	XR_SetVector (ed, f->offhandthrowvel, vel);
 	XR_SetFloat (ed, f->offhandvelmag, vr_xr_hand[off_hand].speed);
+	{
+		vec3_t tv;
+		XR_HandVelToWorld (&vr_xr_hand[off_hand], vr_xr_hand[off_hand].throw_velocity, tv);
+		VectorScale (tv, vr_weapon_throw_velocity_mult.value, tv);
+		XR_SetVector (ed, f->offhandthrowvel, tv);
+	}
 	XR_SetVector (ed, f->offmuzzlepos, pos);
 
 	XR_SetVector (ed, f->headvel, head_v);
@@ -2641,6 +2753,13 @@ the .handtouch field it invokes. Ported from quakevr world.cpp:448-503.
 
 // quakevr allows body-based interaction as an option (vr_cvars.cpp)
 cvar_t vr_body_interactions = {"vr_body_interactions", "0", CVAR_ARCHIVE};
+
+// Throw tuning, defaults from quakevr (vr_cvars.cpp:147-194)
+cvar_t vr_throw_avg_frames = {"vr_throw_avg_frames", "15", CVAR_ARCHIVE};
+cvar_t vr_throw_angvel_avg_frames = {"vr_throw_angvel_avg_frames", "5", CVAR_ARCHIVE};
+cvar_t vr_weapon_throw_velocity_mult = {"vr_weapon_throw_velocity_mult", "1.0", CVAR_ARCHIVE};
+cvar_t vr_weapon_throw_damage_mult = {"vr_weapon_throw_damage_mult", "1.0", CVAR_ARCHIVE};
+cvar_t vr_weapon_throw_mode = {"vr_weapon_throw_mode", "0", CVAR_ARCHIVE};
 
 // hands are given some size so they do not have to be pixel-perfect
 #define VR_HAND_TOUCH_SIZE 2.5f
