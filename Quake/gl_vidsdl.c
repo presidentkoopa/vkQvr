@@ -865,7 +865,11 @@ static void GL_InitInstance (void)
 
 	instance_create_info.enabledExtensionCount = sdl_extension_count + additionalExtensionCount;
 
-	err = vkCreateInstance (&instance_create_info, NULL, &vulkan_instance);
+	// let the XR runtime create the instance when in VR, so it can add the
+	// extensions the compositor needs; falls through to the normal path if
+	// VR is inactive or the runtime refuses
+	if (!VR_XR_CreateVulkanInstance (fpGetInstanceProcAddr, &instance_create_info, &vulkan_instance, &err))
+		err = vkCreateInstance (&instance_create_info, NULL, &vulkan_instance);
 	if (err != VK_SUCCESS)
 		Sys_Error ("Couldn't create Vulkan instance with code %i", (int)err);
 
@@ -1062,6 +1066,22 @@ static void GL_InitDevice (void)
 	}
 	vulkan_physical_device = physical_devices[device_index];
 	Mem_Free (physical_devices);
+
+	// in VR the GPU is not ours to choose: the headset hangs off one specific
+	// adapter, and the runtime tells us which. overrides -device deliberately.
+	{
+		VkPhysicalDevice xr_device;
+		if (VR_XR_GetVulkanPhysicalDevice (fpGetInstanceProcAddr, vulkan_instance, &xr_device))
+		{
+			if (xr_device != vulkan_physical_device)
+			{
+				VkPhysicalDeviceProperties props;
+				vkGetPhysicalDeviceProperties (xr_device, &props);
+				Con_Printf ("OpenXR: using headset GPU \"%s\"\n", props.deviceName);
+				vulkan_physical_device = xr_device;
+			}
+		}
+	}
 
 	qboolean found_swapchain_extension = false;
 	vulkan_globals.dedicated_allocation = false;
@@ -1349,7 +1369,8 @@ static void GL_InitDevice (void)
 	device_create_info.ppEnabledExtensionNames = device_extensions;
 	device_create_info.pEnabledFeatures = &device_features;
 
-	err = vkCreateDevice (vulkan_physical_device, &device_create_info, NULL, &vulkan_globals.device);
+	if (!VR_XR_CreateVulkanDevice (fpGetInstanceProcAddr, vulkan_physical_device, &device_create_info, &vulkan_globals.device, &err))
+		err = vkCreateDevice (vulkan_physical_device, &device_create_info, NULL, &vulkan_globals.device);
 	if (err != VK_SUCCESS)
 		Sys_Error ("Couldn't create Vulkan device with code %i", (int)err);
 
@@ -1394,6 +1415,9 @@ static void GL_InitDevice (void)
 #endif
 
 	vkGetDeviceQueue (vulkan_globals.device, vulkan_globals.gfx_queue_family_index, 0, &vulkan_globals.queue);
+
+	// the session needs a live graphics queue, so this is the earliest it can happen
+	VR_XR_CreateSession (vulkan_instance, vulkan_physical_device, vulkan_globals.device, vulkan_globals.gfx_queue_family_index, 0);
 
 	VkFormatProperties format_properties;
 
@@ -2885,7 +2909,19 @@ static qboolean GL_CreateSwapChain (void)
 	swapchain_create_info.sType = VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR;
 	swapchain_create_info.pNext = NULL;
 	swapchain_create_info.surface = vulkan_surface;
-	swapchain_create_info.minImageCount = q_max ((vid_vsync.value >= 2) ? 3 : 2, vulkan_surface_capabilities.minImageCount);
+	// VR renders the scene once per eye, so two window images have to be held
+	// at the same time within a single frame. GL_AcquireNextSwapChainImage caps
+	// concurrent acquisitions at (count - 1), so the stock 2 images allows only
+	// one and the second eye is silently refused an image. Ask for 4.
+	{
+		uint32_t wanted = vr_xr_active ? 4 : (uint32_t)((vid_vsync.value >= 2) ? 3 : 2);
+		if (wanted < vulkan_surface_capabilities.minImageCount)
+			wanted = vulkan_surface_capabilities.minImageCount;
+		// maxImageCount == 0 means "no limit"
+		if (vulkan_surface_capabilities.maxImageCount > 0 && wanted > vulkan_surface_capabilities.maxImageCount)
+			wanted = vulkan_surface_capabilities.maxImageCount;
+		swapchain_create_info.minImageCount = wanted;
+	}
 	swapchain_create_info.imageFormat = swap_chain_format;
 	swapchain_create_info.imageColorSpace = swap_chain_color_space;
 	swapchain_create_info.imageExtent.width = vid.width;
@@ -3605,6 +3641,11 @@ typedef struct end_rendering_parms_s
 	qboolean	 ray_debug	   : 1;
 	uint32_t	 render_scale  : 4;
 	uint32_t	 vid_height	   : 20;
+	// Which eye this frame belongs to, captured here on the main thread.
+	// GL_EndRenderingTask can run asynchronously on a worker well after the
+	// main thread has moved on to the next eye, so reading the global at that
+	// point would race and blit the wrong image.
+	int			 vr_eye;
 	float		 time;
 	VkClearValue color_clear_value;
 	uint8_t		 v_blend[4];
@@ -4133,6 +4174,11 @@ static void GL_EndRenderingTask (end_rendering_parms_t *parms)
 		timestamps_written[cb_index] = true;
 	}
 
+	// copy the finished frame into this eye's image before we close the command
+	// buffer. parms->vr_eye, not the global -- see the note on the struct.
+	if (swapchain_acquired)
+		VR_XR_BlitToEye (render_passes_cb, swapchain_images[current_swapchain_buffer], parms->vid_width, parms->vid_height, parms->vr_eye);
+
 	{
 		VkCommandBuffer submit_cbs[PCBX_NUM];
 		for (int pcbx_index = 0; pcbx_index < PCBX_NUM; ++pcbx_index)
@@ -4158,6 +4204,8 @@ static void GL_EndRenderingTask (end_rendering_parms_t *parms)
 		err = vkQueueSubmit (vulkan_globals.queue, 1, &submit_info, command_buffer_fences[cb_index]);
 		if (err != VK_SUCCESS)
 			Sys_Error ("vkQueueSubmit failed with code %i", (int)err);
+		// NB: the eye images are released on the main thread in VR_XR_EndFrame,
+		// not here -- this function can be running on a task worker.
 	}
 
 	vulkan_globals.device_idle = false;
@@ -4233,6 +4281,7 @@ task_handle_t GL_EndRendering (qboolean use_tasks, qboolean swapchain)
 		.render_scale = CLAMP (0, render_scale, 8),
 		.vid_width = vid.width,
 		.vid_height = vid.height,
+		.vr_eye = vr_xr_current_eye,
 		.time = fmod (cl.time, 2.0 * M_PI),
 		.color_clear_value = vulkan_globals.color_clear_value,
 		.v_blend[0] = v_blend[0],
@@ -4699,6 +4748,21 @@ void VID_Init (void)
 			fullscreen = false;
 		else if (COM_CheckParm ("-fullscreen") || COM_CheckParm ("-f"))
 			fullscreen = true;
+	}
+
+	// In VR the scene is rendered at the window size and then blitted into the
+	// eye swapchain, so a window whose aspect differs from the eye target gets
+	// non-uniformly stretched and the whole view feels wrong. Force the window
+	// to the eye aspect. Half the eye resolution keeps the mirror window a
+	// sane size on the desktop while preserving the ratio exactly.
+	// (Rendering at the full recommended size, as quakevr does, needs an
+	// offscreen target rather than the window -- worth doing later.)
+	if (vr_xr_active && vr_xr_eye_width > 0 && vr_xr_eye_height > 0)
+	{
+		width = (int)(vr_xr_eye_width / 2);
+		height = (int)(vr_xr_eye_height / 2);
+		fullscreen = false;
+		Con_Printf ("OpenXR: forcing %dx%d to match eye aspect\n", width, height);
 	}
 
 	if (!VID_ValidMode (width, height, refreshrate, fullscreen))

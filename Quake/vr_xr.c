@@ -1,0 +1,1832 @@
+/*
+Copyright (C) 2026 Quake VR contributors
+
+This program is free software; you can redistribute it and/or
+modify it under the terms of the GNU General Public License
+as published by the Free Software Foundation; either version 2
+of the License, or (at your option) any later version.
+
+This program is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+GNU General Public License for more details.
+
+See file, 'COPYING', for details.
+*/
+// vr_xr.c -- OpenXR runtime integration
+//
+// Stage 1: acquire an OpenXR instance and HMD system, and report what the
+// runtime wants from Vulkan. Session, swapchains and stereo submission come
+// later; nothing here touches the renderer yet.
+
+#include "quakedef.h"
+
+#define XR_USE_GRAPHICS_API_VULKAN
+#include <openxr/openxr.h>
+#include <openxr/openxr_platform.h>
+
+#include "vr_xr.h"
+
+qboolean vr_xr_active = false;
+uint32_t vr_xr_eye_width = 0;
+uint32_t vr_xr_eye_height = 0;
+
+static XrInstance xr_instance = XR_NULL_HANDLE;
+static XrSystemId xr_system = XR_NULL_SYSTEM_ID;
+
+// Quake is a stereo, seated/standing HMD app; this is the only view config we support.
+#define XR_VIEW_CONFIG XR_VIEW_CONFIGURATION_TYPE_PRIMARY_STEREO
+
+// defined further down with the session statics
+static void XR_DestroySession (void);
+static void XR_AcquireEyes (void);
+
+// mathlib.h only provides the one direction
+#define RAD2DEG(a) ((a) / M_PI_DIV_180)
+
+/*
+===============
+XR_ResultStr
+
+xrResultToString needs a live instance, so fall back to the numeric code when
+we fail before (or while) creating one.
+===============
+*/
+static const char *XR_ResultStr (XrResult res)
+{
+	static char buf[XR_MAX_RESULT_STRING_SIZE];
+	if (xr_instance != XR_NULL_HANDLE && XR_SUCCEEDED (xrResultToString (xr_instance, res, buf)))
+		return buf;
+	q_snprintf (buf, sizeof (buf), "XrResult %d", (int)res);
+	return buf;
+}
+
+/*
+===============
+XR_HasExtension
+===============
+*/
+static qboolean XR_HasExtension (const XrExtensionProperties *props, uint32_t count, const char *name)
+{
+	uint32_t i;
+	for (i = 0; i < count; i++)
+	{
+		if (!strcmp (props[i].extensionName, name))
+			return true;
+	}
+	return false;
+}
+
+/*
+===============
+VR_XR_Shutdown
+===============
+*/
+void VR_XR_Shutdown (void)
+{
+	XR_DestroySession ();
+
+	if (xr_instance != XR_NULL_HANDLE)
+	{
+		xrDestroyInstance (xr_instance);
+		xr_instance = XR_NULL_HANDLE;
+	}
+	xr_system = XR_NULL_SYSTEM_ID;
+	vr_xr_active = false;
+}
+
+/*
+===============
+VR_XR_Init
+
+Never fatal. Any failure logs and leaves the engine running flat.
+===============
+*/
+void VR_XR_Init (void)
+{
+	XrResult				   res;
+	uint32_t				   ext_count = 0;
+	XrExtensionProperties	  *ext_props = NULL;
+	uint32_t				   i;
+	XrInstanceCreateInfo	   instance_info;
+	XrApplicationInfo		  *app;
+	XrSystemGetInfo			   system_info;
+	XrSystemProperties		   system_props;
+	XrInstanceProperties	   instance_props;
+	uint32_t				   view_count = 0;
+	XrViewConfigurationView	   views[2];
+	const char				  *enabled_exts[1];
+	PFN_xrGetVulkanGraphicsRequirements2KHR pfn_get_vk_reqs = NULL;
+	XrGraphicsRequirementsVulkanKHR vk_reqs;
+
+	// registered unconditionally so it can be set from configs even when the
+	// engine happens to start flat
+	Cvar_RegisterVariable (&vr_world_scale);
+	Cvar_RegisterVariable (&vr_floor_offset);
+	Cvar_RegisterVariable (&vr_turn_speed);
+	Cvar_RegisterVariable (&vr_snap_turn);
+	Cvar_RegisterVariable (&vr_deadzone);
+
+	if (COM_CheckParm ("-novr") || !COM_CheckParm ("-vr"))
+		return; // flat mode; say nothing
+
+	Con_Printf ("\nOpenXR: initializing\n");
+
+	// --- does a runtime exist, and does it speak Vulkan? ---
+	res = xrEnumerateInstanceExtensionProperties (NULL, 0, &ext_count, NULL);
+	if (XR_FAILED (res))
+	{
+		Con_Warning ("OpenXR: no runtime available (%s)\n", XR_ResultStr (res));
+		return;
+	}
+
+	ext_props = (XrExtensionProperties *)Mem_Alloc (sizeof (XrExtensionProperties) * ext_count);
+	for (i = 0; i < ext_count; i++)
+		ext_props[i].type = XR_TYPE_EXTENSION_PROPERTIES;
+
+	res = xrEnumerateInstanceExtensionProperties (NULL, ext_count, &ext_count, ext_props);
+	if (XR_FAILED (res))
+	{
+		Con_Warning ("OpenXR: could not enumerate extensions (%s)\n", XR_ResultStr (res));
+		Mem_Free (ext_props);
+		return;
+	}
+
+	if (!XR_HasExtension (ext_props, ext_count, XR_KHR_VULKAN_ENABLE2_EXTENSION_NAME))
+	{
+		Con_Warning ("OpenXR: runtime lacks %s\n", XR_KHR_VULKAN_ENABLE2_EXTENSION_NAME);
+		Mem_Free (ext_props);
+		return;
+	}
+	Mem_Free (ext_props);
+
+	// --- instance ---
+	enabled_exts[0] = XR_KHR_VULKAN_ENABLE2_EXTENSION_NAME;
+
+	memset (&instance_info, 0, sizeof (instance_info));
+	instance_info.type = XR_TYPE_INSTANCE_CREATE_INFO;
+	instance_info.enabledExtensionCount = 1;
+	instance_info.enabledExtensionNames = enabled_exts;
+
+	app = &instance_info.applicationInfo;
+	q_strlcpy (app->applicationName, "vkQuake VR", XR_MAX_APPLICATION_NAME_SIZE);
+	q_strlcpy (app->engineName, "vkQuake", XR_MAX_ENGINE_NAME_SIZE);
+	app->applicationVersion = 1;
+	app->engineVersion = 1;
+	// request 1.0: 1.1 runtimes accept it, 1.0-only runtimes require it
+	app->apiVersion = XR_API_VERSION_1_0;
+
+	res = xrCreateInstance (&instance_info, &xr_instance);
+	if (XR_FAILED (res))
+	{
+		xr_instance = XR_NULL_HANDLE; // so XR_ResultStr stays on the numeric path
+		Con_Warning ("OpenXR: xrCreateInstance failed (%s)\n", XR_ResultStr (res));
+		return;
+	}
+
+	memset (&instance_props, 0, sizeof (instance_props));
+	instance_props.type = XR_TYPE_INSTANCE_PROPERTIES;
+	if (XR_SUCCEEDED (xrGetInstanceProperties (xr_instance, &instance_props)))
+	{
+		Con_Printf (
+			"OpenXR: runtime \"%s\" %u.%u.%u\n", instance_props.runtimeName, (unsigned)XR_VERSION_MAJOR (instance_props.runtimeVersion),
+			(unsigned)XR_VERSION_MINOR (instance_props.runtimeVersion), (unsigned)XR_VERSION_PATCH (instance_props.runtimeVersion));
+	}
+
+	// --- headset ---
+	memset (&system_info, 0, sizeof (system_info));
+	system_info.type = XR_TYPE_SYSTEM_GET_INFO;
+	system_info.formFactor = XR_FORM_FACTOR_HEAD_MOUNTED_DISPLAY;
+
+	res = xrGetSystem (xr_instance, &system_info, &xr_system);
+	if (XR_FAILED (res))
+	{
+		// XR_ERROR_FORM_FACTOR_UNAVAILABLE just means the headset is off/asleep
+		Con_Warning ("OpenXR: no headset available (%s)\n", XR_ResultStr (res));
+		VR_XR_Shutdown ();
+		return;
+	}
+
+	memset (&system_props, 0, sizeof (system_props));
+	system_props.type = XR_TYPE_SYSTEM_PROPERTIES;
+	if (XR_SUCCEEDED (xrGetSystemProperties (xr_instance, xr_system, &system_props)))
+	{
+		Con_Printf ("OpenXR: HMD \"%s\"\n", system_props.systemName);
+		Con_Printf (
+			"OpenXR: max swapchain %ux%u, %u layers\n", (unsigned)system_props.graphicsProperties.maxSwapchainImageWidth,
+			(unsigned)system_props.graphicsProperties.maxSwapchainImageHeight, (unsigned)system_props.graphicsProperties.maxLayerCount);
+		Con_Printf (
+			"OpenXR: orientation %s, position %s\n", system_props.trackingProperties.orientationTracking ? "yes" : "no",
+			system_props.trackingProperties.positionTracking ? "yes" : "no");
+	}
+
+	// --- per-eye render target size ---
+	res = xrEnumerateViewConfigurationViews (xr_instance, xr_system, XR_VIEW_CONFIG, 0, &view_count, NULL);
+	if (XR_FAILED (res) || view_count != 2)
+	{
+		Con_Warning ("OpenXR: stereo view configuration unavailable (%s)\n", XR_ResultStr (res));
+		VR_XR_Shutdown ();
+		return;
+	}
+
+	for (i = 0; i < 2; i++)
+	{
+		memset (&views[i], 0, sizeof (views[i]));
+		views[i].type = XR_TYPE_VIEW_CONFIGURATION_VIEW;
+	}
+
+	res = xrEnumerateViewConfigurationViews (xr_instance, xr_system, XR_VIEW_CONFIG, 2, &view_count, views);
+	if (XR_FAILED (res))
+	{
+		Con_Warning ("OpenXR: could not query view configuration (%s)\n", XR_ResultStr (res));
+		VR_XR_Shutdown ();
+		return;
+	}
+
+	vr_xr_eye_width = views[0].recommendedImageRectWidth;
+	vr_xr_eye_height = views[0].recommendedImageRectHeight;
+	Con_Printf ("OpenXR: per-eye render target %ux%u (%ux MSAA)\n", (unsigned)vr_xr_eye_width, (unsigned)vr_xr_eye_height, (unsigned)views[0].recommendedSwapchainSampleCount);
+
+	// --- what the runtime needs from Vulkan ---
+	// must be called before vkCreateInstance/vkCreateDevice, hence VR_XR_Init runs before VID_Init
+	res = xrGetInstanceProcAddr (xr_instance, "xrGetVulkanGraphicsRequirements2KHR", (PFN_xrVoidFunction *)&pfn_get_vk_reqs);
+	if (XR_SUCCEEDED (res) && pfn_get_vk_reqs)
+	{
+		memset (&vk_reqs, 0, sizeof (vk_reqs));
+		vk_reqs.type = XR_TYPE_GRAPHICS_REQUIREMENTS_VULKAN_KHR;
+		if (XR_SUCCEEDED (pfn_get_vk_reqs (xr_instance, xr_system, &vk_reqs)))
+		{
+			Con_Printf (
+				"OpenXR: needs Vulkan %u.%u.%u - %u.%u.%u\n", (unsigned)XR_VERSION_MAJOR (vk_reqs.minApiVersionSupported),
+				(unsigned)XR_VERSION_MINOR (vk_reqs.minApiVersionSupported), (unsigned)XR_VERSION_PATCH (vk_reqs.minApiVersionSupported),
+				(unsigned)XR_VERSION_MAJOR (vk_reqs.maxApiVersionSupported), (unsigned)XR_VERSION_MINOR (vk_reqs.maxApiVersionSupported),
+				(unsigned)XR_VERSION_PATCH (vk_reqs.maxApiVersionSupported));
+		}
+	}
+
+	vr_xr_active = true;
+	Con_Printf ("OpenXR: ready\n\n");
+}
+
+/*
+================================================================================
+
+	VULKAN CREATION
+
+	Under XR_KHR_vulkan_enable2 the runtime creates the Vulkan instance and
+	device on our behalf, wrapping our own create-infos so it can splice in
+	whatever extensions the compositor requires. It also chooses the physical
+	device, which matters on multi-GPU machines: the headset is attached to
+	one specific adapter and rendering on the other would mean a blit across
+	the PCIe bus every frame, or simply fail.
+
+================================================================================
+*/
+
+/*
+===============
+XR_GetProc
+===============
+*/
+static void *XR_GetProc (const char *name)
+{
+	PFN_xrVoidFunction fn = NULL;
+	if (xr_instance == XR_NULL_HANDLE)
+		return NULL;
+	if (XR_FAILED (xrGetInstanceProcAddr (xr_instance, name, &fn)))
+		return NULL;
+	return (void *)fn;
+}
+
+/*
+===============
+VR_XR_CreateVulkanInstance
+===============
+*/
+qboolean VR_XR_CreateVulkanInstance (PFN_vkGetInstanceProcAddr gipa, const VkInstanceCreateInfo *create_info, VkInstance *out_instance, VkResult *vk_err)
+{
+	PFN_xrCreateVulkanInstanceKHR pfn;
+	XrVulkanInstanceCreateInfoKHR info;
+	XrResult					  res;
+
+	if (!vr_xr_active)
+		return false;
+
+	pfn = (PFN_xrCreateVulkanInstanceKHR)XR_GetProc ("xrCreateVulkanInstanceKHR");
+	if (!pfn)
+	{
+		Con_Warning ("OpenXR: xrCreateVulkanInstanceKHR unavailable, falling back to flat\n");
+		VR_XR_Shutdown ();
+		return false;
+	}
+
+	memset (&info, 0, sizeof (info));
+	info.type = XR_TYPE_VULKAN_INSTANCE_CREATE_INFO_KHR;
+	info.systemId = xr_system;
+	info.pfnGetInstanceProcAddr = gipa;
+	info.vulkanCreateInfo = create_info;
+	info.vulkanAllocator = NULL;
+
+	res = pfn (xr_instance, &info, out_instance, vk_err);
+	if (XR_FAILED (res))
+	{
+		Con_Warning ("OpenXR: xrCreateVulkanInstanceKHR failed (%s)\n", XR_ResultStr (res));
+		VR_XR_Shutdown ();
+		return false;
+	}
+
+	return true;
+}
+
+/*
+===============
+VR_XR_GetVulkanPhysicalDevice
+===============
+*/
+qboolean VR_XR_GetVulkanPhysicalDevice (PFN_vkGetInstanceProcAddr gipa, VkInstance instance, VkPhysicalDevice *out_device)
+{
+	PFN_xrGetVulkanGraphicsDevice2KHR pfn;
+	XrVulkanGraphicsDeviceGetInfoKHR  info;
+	XrResult						  res;
+
+	(void)gipa;
+
+	if (!vr_xr_active)
+		return false;
+
+	pfn = (PFN_xrGetVulkanGraphicsDevice2KHR)XR_GetProc ("xrGetVulkanGraphicsDevice2KHR");
+	if (!pfn)
+	{
+		Con_Warning ("OpenXR: xrGetVulkanGraphicsDevice2KHR unavailable, falling back to flat\n");
+		VR_XR_Shutdown ();
+		return false;
+	}
+
+	memset (&info, 0, sizeof (info));
+	info.type = XR_TYPE_VULKAN_GRAPHICS_DEVICE_GET_INFO_KHR;
+	info.systemId = xr_system;
+	info.vulkanInstance = instance;
+
+	res = pfn (xr_instance, &info, out_device);
+	if (XR_FAILED (res))
+	{
+		Con_Warning ("OpenXR: could not resolve the headset's GPU (%s)\n", XR_ResultStr (res));
+		VR_XR_Shutdown ();
+		return false;
+	}
+
+	return true;
+}
+
+/*
+===============
+VR_XR_CreateVulkanDevice
+===============
+*/
+qboolean VR_XR_CreateVulkanDevice (
+	PFN_vkGetInstanceProcAddr gipa, VkPhysicalDevice physical_device, const VkDeviceCreateInfo *create_info, VkDevice *out_device, VkResult *vk_err)
+{
+	PFN_xrCreateVulkanDeviceKHR pfn;
+	XrVulkanDeviceCreateInfoKHR info;
+	XrResult					res;
+
+	if (!vr_xr_active)
+		return false;
+
+	pfn = (PFN_xrCreateVulkanDeviceKHR)XR_GetProc ("xrCreateVulkanDeviceKHR");
+	if (!pfn)
+	{
+		Con_Warning ("OpenXR: xrCreateVulkanDeviceKHR unavailable, falling back to flat\n");
+		VR_XR_Shutdown ();
+		return false;
+	}
+
+	memset (&info, 0, sizeof (info));
+	info.type = XR_TYPE_VULKAN_DEVICE_CREATE_INFO_KHR;
+	info.systemId = xr_system;
+	info.pfnGetInstanceProcAddr = gipa;
+	info.vulkanPhysicalDevice = physical_device;
+	info.vulkanCreateInfo = create_info;
+	info.vulkanAllocator = NULL;
+
+	res = pfn (xr_instance, &info, out_device, vk_err);
+	if (XR_FAILED (res))
+	{
+		Con_Warning ("OpenXR: xrCreateVulkanDeviceKHR failed (%s)\n", XR_ResultStr (res));
+		VR_XR_Shutdown ();
+		return false;
+	}
+
+	return true;
+}
+
+/*
+================================================================================
+
+	SESSION
+
+	An OpenXR session is a state machine, not just a handle. The runtime tells
+	us when it is ready for us to begin, when we are actually visible, and when
+	to stop; submitting frames outside the running states is an error. Virtual
+	Desktop in particular parks the session while the headset is off the head,
+	so this has to be driven properly rather than assumed.
+
+================================================================================
+*/
+
+static XrSession	  xr_session = XR_NULL_HANDLE;
+static XrSpace		  xr_space = XR_NULL_HANDLE;
+static XrSessionState xr_state = XR_SESSION_STATE_UNKNOWN;
+static qboolean		  xr_session_running = false;
+
+static XrSwapchain				  xr_swapchain[VR_XR_EYES] = {XR_NULL_HANDLE, XR_NULL_HANDLE};
+static uint32_t					  xr_swapchain_len[VR_XR_EYES] = {0, 0};
+static XrSwapchainImageVulkanKHR *xr_swapchain_images[VR_XR_EYES] = {NULL, NULL};
+static int64_t					  xr_swapchain_format = 0;
+
+static XrFrameState xr_frame_state;
+static qboolean		xr_frame_begun = false;
+
+// filled by xrLocateViews each frame; drives the projection layer
+static XrView	xr_views[VR_XR_EYES];
+static qboolean xr_views_valid = false;
+
+// index of the swapchain image currently acquired per eye, and whether we hold it
+static uint32_t xr_acquired_index[VR_XR_EYES] = {0, 0};
+static qboolean xr_eye_acquired[VR_XR_EYES] = {false, false};
+
+// which eyes actually received an image this frame; the projection layer is
+// only submitted once both have, otherwise the runtime would composite a stale
+// or uninitialised image for the missing eye
+static qboolean xr_eye_rendered[VR_XR_EYES] = {false, false};
+
+/*
+===============
+XR_DestroySession
+
+Tears down session-scoped objects. Safe to call repeatedly and safe to call
+when nothing was ever created, which is what makes the failure paths in
+VR_XR_CreateSession able to just bail to VR_XR_Shutdown.
+===============
+*/
+static void XR_DestroySession (void)
+{
+	uint32_t eye;
+
+	for (eye = 0; eye < VR_XR_EYES; eye++)
+	{
+		if (xr_swapchain[eye] != XR_NULL_HANDLE)
+		{
+			xrDestroySwapchain (xr_swapchain[eye]);
+			xr_swapchain[eye] = XR_NULL_HANDLE;
+		}
+		if (xr_swapchain_images[eye])
+		{
+			Mem_Free (xr_swapchain_images[eye]);
+			xr_swapchain_images[eye] = NULL;
+		}
+		xr_swapchain_len[eye] = 0;
+	}
+
+	if (xr_space != XR_NULL_HANDLE)
+	{
+		xrDestroySpace (xr_space);
+		xr_space = XR_NULL_HANDLE;
+	}
+
+	if (xr_session != XR_NULL_HANDLE)
+	{
+		if (xr_session_running)
+		{
+			xrEndSession (xr_session);
+			xr_session_running = false;
+		}
+		xrDestroySession (xr_session);
+		xr_session = XR_NULL_HANDLE;
+	}
+
+	xr_state = XR_SESSION_STATE_UNKNOWN;
+	xr_frame_begun = false;
+}
+
+/*
+===============
+XR_ChooseSwapchainFormat
+
+The runtime publishes the formats it can composite. Prefer UNORM, and prefer it
+in the same order the window swapchain uses.
+
+vkCmdBlitImage converts between formats, and the frame we copy has already been
+through vkQuake's postprocess -- it is display-ready, not linear. Copying it
+into an sRGB target makes the blit re-encode it a second time, which lifts the
+blacks and washes the whole image out. Matching UNORM keeps the copy a copy.
+===============
+*/
+static int64_t XR_ChooseSwapchainFormat (void)
+{
+	static const int64_t preferred[] = {
+		VK_FORMAT_B8G8R8A8_UNORM, // what the window swapchain picks first
+		VK_FORMAT_R8G8B8A8_UNORM,
+		VK_FORMAT_B8G8R8A8_SRGB,
+		VK_FORMAT_R8G8B8A8_SRGB,
+	};
+	uint32_t count = 0;
+	int64_t *formats;
+	int64_t	 chosen = 0;
+	uint32_t i, j;
+
+	if (XR_FAILED (xrEnumerateSwapchainFormats (xr_session, 0, &count, NULL)) || count == 0)
+		return 0;
+
+	formats = (int64_t *)Mem_Alloc (sizeof (int64_t) * count);
+	if (XR_FAILED (xrEnumerateSwapchainFormats (xr_session, count, &count, formats)))
+	{
+		Mem_Free (formats);
+		return 0;
+	}
+
+	for (i = 0; i < countof (preferred) && !chosen; i++)
+	{
+		for (j = 0; j < count; j++)
+		{
+			if (formats[j] == preferred[i])
+			{
+				chosen = formats[j];
+				break;
+			}
+		}
+	}
+
+	if (!chosen)
+		chosen = formats[0]; // the runtime lists its own preference first
+
+	Mem_Free (formats);
+	return chosen;
+}
+
+/*
+===============
+VR_XR_CreateSession
+===============
+*/
+void VR_XR_CreateSession (VkInstance instance, VkPhysicalDevice physical_device, VkDevice device, uint32_t queue_family_index, uint32_t queue_index)
+{
+	XrGraphicsBindingVulkan2KHR binding;
+	XrSessionCreateInfo			session_info;
+	XrReferenceSpaceCreateInfo	space_info;
+	XrSwapchainCreateInfo		swapchain_info;
+	XrResult					res;
+	uint32_t					eye, i;
+
+	if (!vr_xr_active)
+		return;
+
+	memset (&binding, 0, sizeof (binding));
+	binding.type = XR_TYPE_GRAPHICS_BINDING_VULKAN2_KHR;
+	binding.instance = instance;
+	binding.physicalDevice = physical_device;
+	binding.device = device;
+	binding.queueFamilyIndex = queue_family_index;
+	binding.queueIndex = queue_index;
+
+	memset (&session_info, 0, sizeof (session_info));
+	session_info.type = XR_TYPE_SESSION_CREATE_INFO;
+	session_info.next = &binding;
+	session_info.systemId = xr_system;
+
+	res = xrCreateSession (xr_instance, &session_info, &xr_session);
+	if (XR_FAILED (res))
+	{
+		Con_Warning ("OpenXR: xrCreateSession failed (%s)\n", XR_ResultStr (res));
+		VR_XR_Shutdown ();
+		return;
+	}
+
+	// STAGE is room-scale with a floor-level origin, which is what roomscale
+	// movement wants. Not every runtime offers it; LOCAL is the fallback.
+	memset (&space_info, 0, sizeof (space_info));
+	space_info.type = XR_TYPE_REFERENCE_SPACE_CREATE_INFO;
+	space_info.referenceSpaceType = XR_REFERENCE_SPACE_TYPE_STAGE;
+	space_info.poseInReferenceSpace.orientation.w = 1.0f;
+
+	res = xrCreateReferenceSpace (xr_session, &space_info, &xr_space);
+	if (XR_FAILED (res))
+	{
+		space_info.referenceSpaceType = XR_REFERENCE_SPACE_TYPE_LOCAL;
+		res = xrCreateReferenceSpace (xr_session, &space_info, &xr_space);
+		if (XR_FAILED (res))
+		{
+			Con_Warning ("OpenXR: no usable reference space (%s)\n", XR_ResultStr (res));
+			VR_XR_Shutdown ();
+			return;
+		}
+		Con_Printf ("OpenXR: using LOCAL space (no room-scale stage)\n");
+	}
+	else
+		Con_Printf ("OpenXR: using STAGE space (room-scale)\n");
+
+	xr_swapchain_format = XR_ChooseSwapchainFormat ();
+	if (!xr_swapchain_format)
+	{
+		Con_Warning ("OpenXR: no usable swapchain format\n");
+		VR_XR_Shutdown ();
+		return;
+	}
+
+	for (eye = 0; eye < VR_XR_EYES; eye++)
+	{
+		memset (&swapchain_info, 0, sizeof (swapchain_info));
+		swapchain_info.type = XR_TYPE_SWAPCHAIN_CREATE_INFO;
+		swapchain_info.usageFlags = XR_SWAPCHAIN_USAGE_COLOR_ATTACHMENT_BIT | XR_SWAPCHAIN_USAGE_TRANSFER_DST_BIT;
+		swapchain_info.format = xr_swapchain_format;
+		swapchain_info.sampleCount = 1;
+		swapchain_info.width = vr_xr_eye_width;
+		swapchain_info.height = vr_xr_eye_height;
+		swapchain_info.faceCount = 1;
+		swapchain_info.arraySize = 1;
+		swapchain_info.mipCount = 1;
+
+		res = xrCreateSwapchain (xr_session, &swapchain_info, &xr_swapchain[eye]);
+		if (XR_FAILED (res))
+		{
+			Con_Warning ("OpenXR: xrCreateSwapchain failed for eye %u (%s)\n", (unsigned)eye, XR_ResultStr (res));
+			VR_XR_Shutdown ();
+			return;
+		}
+
+		if (XR_FAILED (xrEnumerateSwapchainImages (xr_swapchain[eye], 0, &xr_swapchain_len[eye], NULL)))
+		{
+			Con_Warning ("OpenXR: could not count swapchain images\n");
+			VR_XR_Shutdown ();
+			return;
+		}
+
+		xr_swapchain_images[eye] = (XrSwapchainImageVulkanKHR *)Mem_Alloc (sizeof (XrSwapchainImageVulkanKHR) * xr_swapchain_len[eye]);
+		for (i = 0; i < xr_swapchain_len[eye]; i++)
+			xr_swapchain_images[eye][i].type = XR_TYPE_SWAPCHAIN_IMAGE_VULKAN2_KHR;
+
+		if (XR_FAILED (xrEnumerateSwapchainImages (
+				xr_swapchain[eye], xr_swapchain_len[eye], &xr_swapchain_len[eye], (XrSwapchainImageBaseHeader *)xr_swapchain_images[eye])))
+		{
+			Con_Warning ("OpenXR: could not enumerate swapchain images\n");
+			VR_XR_Shutdown ();
+			return;
+		}
+	}
+
+	Con_Printf (
+		"OpenXR: session created, %ux%u per eye, %u images, format %d\n", (unsigned)vr_xr_eye_width, (unsigned)vr_xr_eye_height,
+		(unsigned)xr_swapchain_len[0], (int)xr_swapchain_format);
+
+	VR_XR_InitInput ();
+}
+
+/*
+===============
+VR_XR_SessionRunning
+===============
+*/
+qboolean VR_XR_SessionRunning (void)
+{
+	return vr_xr_active && xr_session_running;
+}
+
+/*
+===============
+VR_XR_PumpEvents
+
+Drives the session state machine. Must be called regularly or the runtime will
+consider us unresponsive.
+===============
+*/
+void VR_XR_PumpEvents (void)
+{
+	XrEventDataBuffer ev;
+
+	if (!vr_xr_active || xr_session == XR_NULL_HANDLE)
+		return;
+
+	for (;;)
+	{
+		memset (&ev, 0, sizeof (ev));
+		ev.type = XR_TYPE_EVENT_DATA_BUFFER;
+		if (xrPollEvent (xr_instance, &ev) != XR_SUCCESS)
+			break;
+
+		switch (ev.type)
+		{
+		case XR_TYPE_EVENT_DATA_SESSION_STATE_CHANGED:
+		{
+			const XrEventDataSessionStateChanged *changed = (const XrEventDataSessionStateChanged *)&ev;
+			xr_state = changed->state;
+
+			if (xr_state == XR_SESSION_STATE_READY && !xr_session_running)
+			{
+				XrSessionBeginInfo begin_info;
+				memset (&begin_info, 0, sizeof (begin_info));
+				begin_info.type = XR_TYPE_SESSION_BEGIN_INFO;
+				begin_info.primaryViewConfigurationType = XR_VIEW_CONFIG;
+				if (XR_SUCCEEDED (xrBeginSession (xr_session, &begin_info)))
+				{
+					xr_session_running = true;
+					Con_Printf ("OpenXR: session running\n");
+				}
+			}
+			else if (xr_state == XR_SESSION_STATE_STOPPING && xr_session_running)
+			{
+				xrEndSession (xr_session);
+				xr_session_running = false;
+				Con_Printf ("OpenXR: session stopped\n");
+			}
+			else if (xr_state == XR_SESSION_STATE_EXITING || xr_state == XR_SESSION_STATE_LOSS_PENDING)
+			{
+				Con_Printf ("OpenXR: session exiting\n");
+				xr_session_running = false;
+			}
+			break;
+		}
+		case XR_TYPE_EVENT_DATA_INSTANCE_LOSS_PENDING:
+			Con_Warning ("OpenXR: runtime is going away\n");
+			xr_session_running = false;
+			break;
+		default:
+			break;
+		}
+	}
+}
+
+/*
+===============
+VR_XR_BeginFrame
+
+Returns false when this frame should not be rendered. The runtime can legally
+ask us to idle -- e.g. headset off the head -- and burning GPU then is waste.
+===============
+*/
+qboolean VR_XR_BeginFrame (void)
+{
+	XrFrameWaitInfo	 wait_info;
+	XrFrameBeginInfo begin_info;
+
+	if (!VR_XR_SessionRunning ())
+		return false;
+
+	memset (&wait_info, 0, sizeof (wait_info));
+	wait_info.type = XR_TYPE_FRAME_WAIT_INFO;
+	memset (&xr_frame_state, 0, sizeof (xr_frame_state));
+	xr_frame_state.type = XR_TYPE_FRAME_STATE;
+
+	// blocks until the runtime wants the next frame: this is the pacing
+	// mechanism, and is why VR framerate is driven by the compositor, not us
+	if (XR_FAILED (xrWaitFrame (xr_session, &wait_info, &xr_frame_state)))
+		return false;
+
+	memset (&begin_info, 0, sizeof (begin_info));
+	begin_info.type = XR_TYPE_FRAME_BEGIN_INFO;
+	if (XR_FAILED (xrBeginFrame (xr_session, &begin_info)))
+		return false;
+
+	xr_frame_begun = true;
+
+	// controller state, sampled against this frame's predicted display time
+	VR_XR_SyncInput ();
+
+	// Acquire both eye images here, on the main thread. The blit itself is
+	// recorded from GL_EndRenderingTask, which vkQuake may run on a task
+	// worker -- recording Vulkan commands there is fine, but calling into the
+	// OpenXR runtime from it while xrEndFrame runs on the main thread is not.
+	// Keeping every xr* call on this thread is what lets r_tasks stay enabled.
+	XR_AcquireEyes ();
+
+	// where the eyes will be at predicted display time -- not where they are
+	// now. Using anything else is what makes VR feel laggy.
+	xr_views_valid = false;
+	if (xr_frame_state.shouldRender)
+	{
+		XrViewLocateInfo locate_info;
+		XrViewState		 view_state;
+		uint32_t		 count = 0;
+		uint32_t		 i;
+
+		memset (&locate_info, 0, sizeof (locate_info));
+		locate_info.type = XR_TYPE_VIEW_LOCATE_INFO;
+		locate_info.viewConfigurationType = XR_VIEW_CONFIG;
+		locate_info.displayTime = xr_frame_state.predictedDisplayTime;
+		locate_info.space = xr_space;
+
+		memset (&view_state, 0, sizeof (view_state));
+		view_state.type = XR_TYPE_VIEW_STATE;
+
+		for (i = 0; i < VR_XR_EYES; i++)
+		{
+			memset (&xr_views[i], 0, sizeof (xr_views[i]));
+			xr_views[i].type = XR_TYPE_VIEW;
+		}
+
+		if (XR_SUCCEEDED (xrLocateViews (xr_session, &locate_info, &view_state, VR_XR_EYES, &count, xr_views)) && count == VR_XR_EYES &&
+			(view_state.viewStateFlags & XR_VIEW_STATE_POSITION_VALID_BIT) && (view_state.viewStateFlags & XR_VIEW_STATE_ORIENTATION_VALID_BIT))
+		{
+			xr_views_valid = true;
+		}
+	}
+
+	return xr_frame_state.shouldRender ? true : false;
+}
+
+/*
+===============
+XR_AcquireEyes
+
+Main thread only. Grabs an image from each eye swapchain and blocks until the
+runtime says it is safe to write to.
+===============
+*/
+static void XR_AcquireEyes (void)
+{
+	XrSwapchainImageAcquireInfo acquire_info;
+	XrSwapchainImageWaitInfo	wait_info;
+	uint32_t					eye;
+
+	for (eye = 0; eye < VR_XR_EYES; eye++)
+	{
+		if (xr_eye_acquired[eye] || xr_swapchain[eye] == XR_NULL_HANDLE)
+			continue;
+
+		memset (&acquire_info, 0, sizeof (acquire_info));
+		acquire_info.type = XR_TYPE_SWAPCHAIN_IMAGE_ACQUIRE_INFO;
+		if (XR_FAILED (xrAcquireSwapchainImage (xr_swapchain[eye], &acquire_info, &xr_acquired_index[eye])))
+			continue;
+
+		memset (&wait_info, 0, sizeof (wait_info));
+		wait_info.type = XR_TYPE_SWAPCHAIN_IMAGE_WAIT_INFO;
+		wait_info.timeout = XR_INFINITE_DURATION;
+		if (XR_FAILED (xrWaitSwapchainImage (xr_swapchain[eye], &wait_info)))
+			continue;
+
+		xr_eye_acquired[eye] = true;
+	}
+}
+
+/*
+===============
+VR_XR_BlitToEyes
+
+Records Vulkan commands only -- no OpenXR calls -- so it is safe to run from a
+task worker thread.
+===============
+*/
+qboolean VR_XR_BlitToEye (VkCommandBuffer cb, VkImage src, uint32_t src_width, uint32_t src_height, int which_eye)
+{
+	const uint32_t		 eye = (uint32_t)which_eye;
+	uint32_t			 eye_it;
+	VkImageMemoryBarrier barrier;
+	VkImageBlit			 blit;
+
+	// Diagnostic: say exactly which precondition rejected the blit. Guessing at
+	// this from the symptom in the headset has not been productive.
+	if (VR_XR_SessionRunning ()) // pre-session frames are expected to reject; ignore them
+	{
+		static int reported = 0;
+		int		   reason = 0;
+		if (!xr_frame_begun)
+			reason = 2;
+		else if (!xr_views_valid)
+			reason = 3;
+		else if (src == VK_NULL_HANDLE)
+			reason = 4;
+		else if (which_eye < 0 || which_eye >= VR_XR_EYES)
+			reason = 5;
+		else if (!xr_eye_acquired[eye])
+			reason = 6;
+		if (reason && reported < 5)
+		{
+			reported++;
+			Con_Printf ("XR blit rejected: reason %d (eye=%d)\n", reason, which_eye);
+		}
+	}
+
+	if (!VR_XR_SessionRunning () || !xr_frame_begun || !xr_views_valid || src == VK_NULL_HANDLE)
+		return false;
+	if (which_eye < 0 || which_eye >= VR_XR_EYES || !xr_eye_acquired[eye])
+		return false;
+
+	// STEREO: this render belongs to exactly one eye.
+	for (eye_it = eye; eye_it == eye; eye_it++)
+	{
+		VkImage dst = xr_swapchain_images[eye_it][xr_acquired_index[eye_it]].image;
+
+		// the runtime hands the image back in an undefined layout
+		memset (&barrier, 0, sizeof (barrier));
+		barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+		barrier.srcAccessMask = 0;
+		barrier.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+		barrier.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+		barrier.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+		barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+		barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+		barrier.image = dst;
+		barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+		barrier.subresourceRange.levelCount = 1;
+		barrier.subresourceRange.layerCount = 1;
+		vkCmdPipelineBarrier (cb, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, NULL, 0, NULL, 1, &barrier);
+
+		// source is the window swapchain image, left in PRESENT_SRC by the main pass
+		memset (&barrier, 0, sizeof (barrier));
+		barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+		barrier.srcAccessMask = VK_ACCESS_MEMORY_READ_BIT;
+		barrier.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+		barrier.oldLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
+		barrier.newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+		barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+		barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+		barrier.image = src;
+		barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+		barrier.subresourceRange.levelCount = 1;
+		barrier.subresourceRange.layerCount = 1;
+		vkCmdPipelineBarrier (cb, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, NULL, 0, NULL, 1, &barrier);
+
+		// scales the window-sized frame up to the eye target; linear filter
+		// because those two resolutions have no reason to match
+		memset (&blit, 0, sizeof (blit));
+		blit.srcSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+		blit.srcSubresource.layerCount = 1;
+		blit.srcOffsets[1].x = (int32_t)src_width;
+		blit.srcOffsets[1].y = (int32_t)src_height;
+		blit.srcOffsets[1].z = 1;
+		blit.dstSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+		blit.dstSubresource.layerCount = 1;
+		blit.dstOffsets[1].x = (int32_t)vr_xr_eye_width;
+		blit.dstOffsets[1].y = (int32_t)vr_xr_eye_height;
+		blit.dstOffsets[1].z = 1;
+		vkCmdBlitImage (
+			cb, src, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, dst, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &blit, VK_FILTER_LINEAR);
+
+		// hand the eye image to the compositor, and put the window image back
+		memset (&barrier, 0, sizeof (barrier));
+		barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+		barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+		barrier.dstAccessMask = VK_ACCESS_MEMORY_READ_BIT;
+		barrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+		barrier.newLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+		barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+		barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+		barrier.image = dst;
+		barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+		barrier.subresourceRange.levelCount = 1;
+		barrier.subresourceRange.layerCount = 1;
+		vkCmdPipelineBarrier (cb, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, 0, 0, NULL, 0, NULL, 1, &barrier);
+
+		memset (&barrier, 0, sizeof (barrier));
+		barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+		barrier.srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+		barrier.dstAccessMask = VK_ACCESS_MEMORY_READ_BIT;
+		barrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+		barrier.newLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
+		barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+		barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+		barrier.image = src;
+		barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+		barrier.subresourceRange.levelCount = 1;
+		barrier.subresourceRange.layerCount = 1;
+		vkCmdPipelineBarrier (cb, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, 0, 0, NULL, 0, NULL, 1, &barrier);
+
+		xr_eye_rendered[eye_it] = true;
+	}
+
+	return true;
+}
+
+/*
+================================================================================
+
+	STEREO
+
+	Two coordinate systems have to be reconciled. OpenXR is right-handed metres
+	with X right, Y up, -Z forward. Quake is X forward, Y left, Z up, in units
+	where a player is 56 tall for roughly 1.75m of human -- hence worldscale.
+
+		quake_x =  -xr_z     (forward)
+		quake_y =  -xr_x     (left)
+		quake_z =   xr_y     (up)
+
+	Rather than rebuild Quake's view matrix from the pose, the head orientation
+	is converted into pitch/yaw/roll and fed through the renderer's existing
+	path. That path is already correct and well tested; duplicating it in a new
+	coordinate convention would only add somewhere new to be subtly wrong.
+
+================================================================================
+*/
+
+int vr_xr_current_eye = -1;
+
+// Values lifted from quakevr, which had them tuned against real play.
+// A Quake unit is 1.5 inches, so world scale 1.0 works out to ~26.25 units per
+// metre -- expressing it as a multiplier rather than a raw unit count means 1.0
+// is "life size" and players can reason about it.
+cvar_t vr_world_scale = {"vr_world_scale", "1.0", CVAR_ARCHIVE};
+
+// The runtime reports head position relative to the floor, but Quake's player
+// origin sits at the middle of the bounding box, not the feet. quakevr settled
+// on -16 units to reconcile the two. (quakevr vr_cvars.cpp:60)
+cvar_t vr_floor_offset = {"vr_floor_offset", "-16", CVAR_ARCHIVE};
+
+#define VR_METERS_TO_UNITS (vr_world_scale.value / (1.5f * 0.0254f))
+
+/*
+===============
+XR_QuatToQuakeAngles
+
+Derives Quake pitch/yaw/roll from an OpenXR orientation. Note Quake's pitch is
+inverted: positive pitch looks *down*.
+===============
+*/
+static void XR_QuatToQuakeAngles (const XrQuaternionf *q, float out_angles[3])
+{
+	float fwd[3], up[3];
+	float qx = q->x, qy = q->y, qz = q->z, qw = q->w;
+	float xr_fwd[3], xr_up[3];
+
+	// forward is -Z and up is +Y in OpenXR, rotated by the orientation
+	xr_fwd[0] = -2.0f * (qx * qz + qw * qy);
+	xr_fwd[1] = -2.0f * (qy * qz - qw * qx);
+	xr_fwd[2] = -(1.0f - 2.0f * (qx * qx + qy * qy));
+
+	xr_up[0] = 2.0f * (qx * qy - qw * qz);
+	xr_up[1] = 1.0f - 2.0f * (qx * qx + qz * qz);
+	xr_up[2] = 2.0f * (qy * qz + qw * qx);
+
+	// into Quake axes
+	fwd[0] = -xr_fwd[2];
+	fwd[1] = -xr_fwd[0];
+	fwd[2] = xr_fwd[1];
+
+	up[0] = -xr_up[2];
+	up[1] = -xr_up[0];
+	up[2] = xr_up[1];
+
+	out_angles[1] = RAD2DEG (atan2f (fwd[1], fwd[0]));					   // yaw
+	out_angles[0] = -RAD2DEG (asinf (CLAMP (-1.0f, fwd[2], 1.0f)));		   // pitch, inverted
+	{
+		// roll: how far "up" has rotated about the forward axis
+		float sy = sinf (DEG2RAD (out_angles[1])), cy = cosf (DEG2RAD (out_angles[1]));
+		float left[3] = {-sy, cy, 0.0f};
+		float dot_left = up[0] * left[0] + up[1] * left[1] + up[2] * left[2];
+		// negated: Quake's roll is positive tilting the other way to what the
+		// up-vector projection gives us
+		out_angles[2] = -RAD2DEG (asinf (CLAMP (-1.0f, dot_left, 1.0f)));
+	}
+}
+
+/*
+===============
+VR_XR_EyePose
+===============
+*/
+qboolean VR_XR_EyePose (float out_angles[3], float out_offset[3])
+{
+	const XrPosef *pose;
+	float		   scale;
+
+	if (vr_xr_current_eye < 0 || vr_xr_current_eye >= VR_XR_EYES || !xr_views_valid)
+		return false;
+
+	pose = &xr_views[vr_xr_current_eye].pose;
+	scale = VR_METERS_TO_UNITS;
+
+	XR_QuatToQuakeAngles (&pose->orientation, out_angles);
+
+	// metres -> Quake units, XR axes -> Quake axes (quakevr vr.cpp:3511)
+	out_offset[0] = -pose->position.z * scale;
+	out_offset[1] = -pose->position.x * scale;
+	out_offset[2] = pose->position.y * scale;
+
+	// floor-relative height -> Quake's centre-of-box origin (quakevr vr.cpp:3516)
+	out_offset[2] += vr_floor_offset.value;
+
+	return true;
+}
+
+/*
+===============
+VR_XR_EyeProjectionMatrix
+
+Matches the renderer's conventions: column major, reverse Z, Y flipped for
+Vulkan clip space. Only the horizontal/vertical extents differ from the stock
+frustum, and they are asymmetric.
+===============
+*/
+qboolean VR_XR_EyeProjectionMatrix (float matrix[16], float farclip)
+{
+	const XrFovf *fov;
+	float		  tan_left, tan_right, tan_up, tan_down;
+	float		  tan_width, tan_height;
+	float		  n, f;
+
+	if (vr_xr_current_eye < 0 || vr_xr_current_eye >= VR_XR_EYES || !xr_views_valid)
+		return false;
+
+	fov = &xr_views[vr_xr_current_eye].fov;
+	tan_left = tanf (fov->angleLeft);
+	tan_right = tanf (fov->angleRight);
+	tan_up = tanf (fov->angleUp);
+	tan_down = tanf (fov->angleDown);
+
+	tan_width = tan_right - tan_left;
+	tan_height = tan_up - tan_down;
+	if (tan_width == 0.0f || tan_height == 0.0f)
+		return false;
+
+	// a fixed near plane: the head can get arbitrarily close to geometry, and
+	// the stock fov-derived near distance has no meaning for an HMD frustum
+	n = 4.0f;
+	f = farclip > n ? farclip : n + 1.0f;
+
+	memset (matrix, 0, 16 * sizeof (float));
+
+	matrix[0 * 4 + 0] = 2.0f / tan_width;
+	matrix[2 * 4 + 0] = (tan_right + tan_left) / tan_width;
+
+	matrix[1 * 4 + 1] = -2.0f / tan_height;
+	matrix[2 * 4 + 1] = -(tan_up + tan_down) / tan_height;
+
+	matrix[2 * 4 + 2] = f / (f - n) - 1.0f;
+	matrix[2 * 4 + 3] = -1.0f;
+
+	matrix[3 * 4 + 2] = (n * f) / (f - n);
+
+	return true;
+}
+
+/*
+===============
+VR_XR_ReleaseEyes
+===============
+*/
+void VR_XR_ReleaseEyes (void)
+{
+	XrSwapchainImageReleaseInfo release_info;
+	uint32_t					eye;
+
+	for (eye = 0; eye < VR_XR_EYES; eye++)
+	{
+		if (!xr_eye_acquired[eye])
+			continue;
+		xr_eye_acquired[eye] = false;
+
+		memset (&release_info, 0, sizeof (release_info));
+		release_info.type = XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO;
+		xrReleaseSwapchainImage (xr_swapchain[eye], &release_info);
+	}
+}
+
+/*
+===============
+VR_XR_EndFrame
+
+Submits no composition layers yet -- enough to prove the runtime accepts our
+frame loop. Layers arrive with the stereo render path.
+===============
+*/
+void VR_XR_EndFrame (void)
+{
+	XrFrameEndInfo end_info;
+
+	if (!xr_frame_begun)
+		return;
+	// NB: xr_frame_begun stays true across the join below. The blit is deferred
+	// to a task worker and does not actually execute until
+	// GL_SynchronizeEndRenderingTask, so clearing the flag here would make
+	// every blit reject itself for being outside a frame.
+
+	XrCompositionLayerProjectionView views[VR_XR_EYES];
+	XrCompositionLayerProjection	 layer;
+	const XrCompositionLayerBaseHeader *layers[1];
+	uint32_t						 eye;
+
+	// Wait for the deferred end-rendering task FIRST. The blits are recorded on
+	// a worker and set xr_eye_rendered there, so testing those flags before
+	// joining would usually see them still clear -- the layer would be dropped
+	// and the headset would show black, with the odd frame slipping through
+	// whenever the worker happened to win the race.
+	GL_SynchronizeEndRenderingTask ();
+	xr_frame_begun = false; // safe now: every deferred blit has run
+
+	memset (&end_info, 0, sizeof (end_info));
+	end_info.type = XR_TYPE_FRAME_END_INFO;
+	end_info.displayTime = xr_frame_state.predictedDisplayTime;
+	end_info.environmentBlendMode = XR_ENVIRONMENT_BLEND_MODE_OPAQUE;
+	end_info.layerCount = 0;
+	end_info.layers = NULL;
+
+	// Diagnostic: report how often each eye actually gets an image and how often
+	// a layer is submitted. A flashing headset means layers are being dropped,
+	// and this says which eye is missing rather than leaving it to guesswork.
+	{
+		static int frames = 0, e0 = 0, e1 = 0, submitted = 0, noviews = 0, shouldrender = 0;
+		frames++;
+		if (xr_eye_rendered[0])
+			e0++;
+		if (xr_eye_rendered[1])
+			e1++;
+		if (!xr_views_valid)
+			noviews++;
+		// the runtime tells us not to render while the headset is off the head;
+		// zero eyes with shouldRender also zero is correct behaviour, not a bug
+		if (xr_frame_state.shouldRender)
+			shouldrender++;
+		if (xr_eye_rendered[0] && xr_eye_rendered[1] && xr_views_valid)
+			submitted++;
+		if ((frames % 90) == 0)
+		{
+			Con_Printf (
+				"XR: %d frames | shouldRender %d | eye0 %d | eye1 %d | layer %d | noviews %d\n", frames, shouldrender, e0, e1, submitted, noviews);
+			Con_Printf (
+				"XR hands: L trk%d pos(%.0f %.0f %.0f) trg%.2f grp%.2f stk(%.2f %.2f) | R trk%d pos(%.0f %.0f %.0f) trg%.2f grp%.2f stk(%.2f %.2f)\n",
+				vr_xr_hand[0].tracked, vr_xr_hand[0].pos[0], vr_xr_hand[0].pos[1], vr_xr_hand[0].pos[2], vr_xr_hand[0].trigger, vr_xr_hand[0].grip,
+				vr_xr_hand[0].stick[0], vr_xr_hand[0].stick[1], vr_xr_hand[1].tracked, vr_xr_hand[1].pos[0], vr_xr_hand[1].pos[1], vr_xr_hand[1].pos[2],
+				vr_xr_hand[1].trigger, vr_xr_hand[1].grip, vr_xr_hand[1].stick[0], vr_xr_hand[1].stick[1]);
+			frames = e0 = e1 = submitted = noviews = shouldrender = 0;
+		}
+	}
+
+	// only present a layer when both eyes actually received an image this frame;
+	// otherwise submit an empty frame, which is legal and keeps pacing
+	if (xr_eye_rendered[0] && xr_eye_rendered[1] && xr_views_valid)
+	{
+		for (eye = 0; eye < VR_XR_EYES; eye++)
+		{
+			memset (&views[eye], 0, sizeof (views[eye]));
+			views[eye].type = XR_TYPE_COMPOSITION_LAYER_PROJECTION_VIEW;
+			views[eye].pose = xr_views[eye].pose;
+			views[eye].fov = xr_views[eye].fov;
+			views[eye].subImage.swapchain = xr_swapchain[eye];
+			views[eye].subImage.imageRect.offset.x = 0;
+			views[eye].subImage.imageRect.offset.y = 0;
+			views[eye].subImage.imageRect.extent.width = (int32_t)vr_xr_eye_width;
+			views[eye].subImage.imageRect.extent.height = (int32_t)vr_xr_eye_height;
+			views[eye].subImage.imageArrayIndex = 0;
+		}
+
+		memset (&layer, 0, sizeof (layer));
+		layer.type = XR_TYPE_COMPOSITION_LAYER_PROJECTION;
+		layer.space = xr_space;
+		layer.viewCount = VR_XR_EYES;
+		layer.views = views;
+
+		layers[0] = (const XrCompositionLayerBaseHeader *)&layer;
+		end_info.layerCount = 1;
+		end_info.layers = layers;
+	}
+
+	VR_XR_ReleaseEyes ();
+
+	xrEndFrame (xr_session, &end_info);
+
+	xr_eye_rendered[0] = xr_eye_rendered[1] = false;
+}
+
+/*
+================================================================================
+
+	INPUT
+
+	The OpenXR action system is a layer of indirection over raw buttons: we
+	declare abstract actions, suggest per-controller bindings, and the runtime
+	resolves them. Users can then rebind in their runtime's own UI, and
+	controllers we never tested still work if their profile is close enough.
+
+	Action inventory mirrors quakevr's (vr.cpp:1204-1229), minus the menu set.
+
+================================================================================
+*/
+
+vr_hand_t vr_xr_hand[VR_HANDS];
+
+static XrActionSet xr_action_set = XR_NULL_HANDLE;
+static XrPath	   xr_hand_path[VR_HANDS];
+
+static XrAction xr_act_pose = XR_NULL_HANDLE;	 // grip: where the hand is
+static XrAction xr_act_aim = XR_NULL_HANDLE;	 // aim: where it points
+static XrAction xr_act_trigger = XR_NULL_HANDLE; // fire
+static XrAction xr_act_grip = XR_NULL_HANDLE;	 // grab
+static XrAction xr_act_stick = XR_NULL_HANDLE;	 // locomotion / turn
+static XrAction xr_act_btn_a = XR_NULL_HANDLE;
+static XrAction xr_act_btn_b = XR_NULL_HANDLE;
+static XrAction xr_act_btn_stick = XR_NULL_HANDLE;
+static XrAction xr_act_menu = XR_NULL_HANDLE;
+static XrAction xr_act_haptic = XR_NULL_HANDLE;
+
+static XrSpace xr_pose_space[VR_HANDS] = {XR_NULL_HANDLE, XR_NULL_HANDLE};
+static XrSpace xr_aim_space[VR_HANDS] = {XR_NULL_HANDLE, XR_NULL_HANDLE};
+
+static qboolean xr_input_ready = false;
+
+/*
+===============
+XR_Path
+===============
+*/
+static XrPath XR_Path (const char *str)
+{
+	XrPath p = XR_NULL_PATH;
+	xrStringToPath (xr_instance, str, &p);
+	return p;
+}
+
+/*
+===============
+XR_MakeAction
+===============
+*/
+static XrAction XR_MakeAction (const char *name, const char *localized, XrActionType type)
+{
+	XrActionCreateInfo info;
+	XrAction		   action = XR_NULL_HANDLE;
+
+	memset (&info, 0, sizeof (info));
+	info.type = XR_TYPE_ACTION_CREATE_INFO;
+	info.actionType = type;
+	q_strlcpy (info.actionName, name, XR_MAX_ACTION_NAME_SIZE);
+	q_strlcpy (info.localizedActionName, localized, XR_MAX_LOCALIZED_ACTION_NAME_SIZE);
+	// every action is per-hand; the runtime keeps left/right separate for us
+	info.countSubactionPaths = VR_HANDS;
+	info.subactionPaths = xr_hand_path;
+
+	if (XR_FAILED (xrCreateAction (xr_action_set, &info, &action)))
+	{
+		Con_Warning ("OpenXR: could not create action %s\n", name);
+		return XR_NULL_HANDLE;
+	}
+	return action;
+}
+
+/*
+===============
+XR_SuggestProfile
+
+Offers one controller profile's worth of bindings. Failure is not fatal: a
+runtime may simply not know the profile, and another may still match.
+===============
+*/
+static void XR_SuggestProfile (const char *profile, const XrActionSuggestedBinding *bindings, uint32_t count)
+{
+	XrInteractionProfileSuggestedBinding suggest;
+	XrPath								 profile_path = XR_Path (profile);
+
+	if (profile_path == XR_NULL_PATH)
+		return;
+
+	memset (&suggest, 0, sizeof (suggest));
+	suggest.type = XR_TYPE_INTERACTION_PROFILE_SUGGESTED_BINDING;
+	suggest.interactionProfile = profile_path;
+	suggest.suggestedBindings = bindings;
+	suggest.countSuggestedBindings = count;
+
+	if (XR_SUCCEEDED (xrSuggestInteractionProfileBindings (xr_instance, &suggest)))
+		Con_Printf ("OpenXR: bound %s\n", profile);
+}
+
+/*
+===============
+VR_XR_InitInput
+===============
+*/
+void VR_XR_InitInput (void)
+{
+	XrActionSetCreateInfo		  set_info;
+	XrActionSpaceCreateInfo		  space_info;
+	XrSessionActionSetsAttachInfo attach_info;
+	uint32_t					  hand;
+
+	if (!vr_xr_active || xr_session == XR_NULL_HANDLE)
+		return;
+
+	memset (vr_xr_hand, 0, sizeof (vr_xr_hand));
+
+	xr_hand_path[VR_HAND_LEFT] = XR_Path ("/user/hand/left");
+	xr_hand_path[VR_HAND_RIGHT] = XR_Path ("/user/hand/right");
+
+	memset (&set_info, 0, sizeof (set_info));
+	set_info.type = XR_TYPE_ACTION_SET_CREATE_INFO;
+	q_strlcpy (set_info.actionSetName, "gameplay", XR_MAX_ACTION_SET_NAME_SIZE);
+	q_strlcpy (set_info.localizedActionSetName, "Gameplay", XR_MAX_LOCALIZED_ACTION_SET_NAME_SIZE);
+	set_info.priority = 0;
+
+	if (XR_FAILED (xrCreateActionSet (xr_instance, &set_info, &xr_action_set)))
+	{
+		Con_Warning ("OpenXR: could not create action set; controllers disabled\n");
+		return;
+	}
+
+	xr_act_pose = XR_MakeAction ("hand_pose", "Hand Pose", XR_ACTION_TYPE_POSE_INPUT);
+	xr_act_aim = XR_MakeAction ("aim_pose", "Aim Pose", XR_ACTION_TYPE_POSE_INPUT);
+	xr_act_trigger = XR_MakeAction ("fire", "Fire", XR_ACTION_TYPE_FLOAT_INPUT);
+	xr_act_grip = XR_MakeAction ("grab", "Grab", XR_ACTION_TYPE_FLOAT_INPUT);
+	xr_act_stick = XR_MakeAction ("stick", "Thumbstick", XR_ACTION_TYPE_VECTOR2F_INPUT);
+	xr_act_btn_a = XR_MakeAction ("button_a", "Button A", XR_ACTION_TYPE_BOOLEAN_INPUT);
+	xr_act_btn_b = XR_MakeAction ("button_b", "Button B", XR_ACTION_TYPE_BOOLEAN_INPUT);
+	xr_act_btn_stick = XR_MakeAction ("stick_click", "Thumbstick Click", XR_ACTION_TYPE_BOOLEAN_INPUT);
+	xr_act_menu = XR_MakeAction ("menu", "Menu", XR_ACTION_TYPE_BOOLEAN_INPUT);
+	xr_act_haptic = XR_MakeAction ("haptic", "Haptic Feedback", XR_ACTION_TYPE_VIBRATION_OUTPUT);
+
+	if (!xr_act_pose || !xr_act_aim)
+	{
+		Con_Warning ("OpenXR: pose actions unavailable; controllers disabled\n");
+		return;
+	}
+
+	// --- Oculus Touch: the Quest controllers ---
+	{
+		const XrActionSuggestedBinding b[] = {
+			{xr_act_pose, XR_Path ("/user/hand/left/input/grip/pose")},
+			{xr_act_pose, XR_Path ("/user/hand/right/input/grip/pose")},
+			{xr_act_aim, XR_Path ("/user/hand/left/input/aim/pose")},
+			{xr_act_aim, XR_Path ("/user/hand/right/input/aim/pose")},
+			{xr_act_trigger, XR_Path ("/user/hand/left/input/trigger/value")},
+			{xr_act_trigger, XR_Path ("/user/hand/right/input/trigger/value")},
+			{xr_act_grip, XR_Path ("/user/hand/left/input/squeeze/value")},
+			{xr_act_grip, XR_Path ("/user/hand/right/input/squeeze/value")},
+			{xr_act_stick, XR_Path ("/user/hand/left/input/thumbstick")},
+			{xr_act_stick, XR_Path ("/user/hand/right/input/thumbstick")},
+			{xr_act_btn_a, XR_Path ("/user/hand/left/input/x/click")},
+			{xr_act_btn_a, XR_Path ("/user/hand/right/input/a/click")},
+			{xr_act_btn_b, XR_Path ("/user/hand/left/input/y/click")},
+			{xr_act_btn_b, XR_Path ("/user/hand/right/input/b/click")},
+			{xr_act_btn_stick, XR_Path ("/user/hand/left/input/thumbstick/click")},
+			{xr_act_btn_stick, XR_Path ("/user/hand/right/input/thumbstick/click")},
+			{xr_act_menu, XR_Path ("/user/hand/left/input/menu/click")},
+			{xr_act_haptic, XR_Path ("/user/hand/left/output/haptic")},
+			{xr_act_haptic, XR_Path ("/user/hand/right/output/haptic")},
+		};
+		XR_SuggestProfile ("/interaction_profiles/oculus/touch_controller", b, countof (b));
+	}
+
+	// --- Valve Index ---
+	{
+		const XrActionSuggestedBinding b[] = {
+			{xr_act_pose, XR_Path ("/user/hand/left/input/grip/pose")},
+			{xr_act_pose, XR_Path ("/user/hand/right/input/grip/pose")},
+			{xr_act_aim, XR_Path ("/user/hand/left/input/aim/pose")},
+			{xr_act_aim, XR_Path ("/user/hand/right/input/aim/pose")},
+			{xr_act_trigger, XR_Path ("/user/hand/left/input/trigger/value")},
+			{xr_act_trigger, XR_Path ("/user/hand/right/input/trigger/value")},
+			{xr_act_grip, XR_Path ("/user/hand/left/input/squeeze/value")},
+			{xr_act_grip, XR_Path ("/user/hand/right/input/squeeze/value")},
+			{xr_act_stick, XR_Path ("/user/hand/left/input/thumbstick")},
+			{xr_act_stick, XR_Path ("/user/hand/right/input/thumbstick")},
+			{xr_act_btn_a, XR_Path ("/user/hand/left/input/a/click")},
+			{xr_act_btn_a, XR_Path ("/user/hand/right/input/a/click")},
+			{xr_act_btn_b, XR_Path ("/user/hand/left/input/b/click")},
+			{xr_act_btn_b, XR_Path ("/user/hand/right/input/b/click")},
+			{xr_act_btn_stick, XR_Path ("/user/hand/left/input/thumbstick/click")},
+			{xr_act_btn_stick, XR_Path ("/user/hand/right/input/thumbstick/click")},
+			{xr_act_haptic, XR_Path ("/user/hand/left/output/haptic")},
+			{xr_act_haptic, XR_Path ("/user/hand/right/output/haptic")},
+		};
+		XR_SuggestProfile ("/interaction_profiles/valve/index_controller", b, countof (b));
+	}
+
+	// --- generic fallback: every runtime must support this profile ---
+	{
+		const XrActionSuggestedBinding b[] = {
+			{xr_act_pose, XR_Path ("/user/hand/left/input/grip/pose")},
+			{xr_act_pose, XR_Path ("/user/hand/right/input/grip/pose")},
+			{xr_act_aim, XR_Path ("/user/hand/left/input/aim/pose")},
+			{xr_act_aim, XR_Path ("/user/hand/right/input/aim/pose")},
+			{xr_act_btn_a, XR_Path ("/user/hand/left/input/select/click")},
+			{xr_act_btn_a, XR_Path ("/user/hand/right/input/select/click")},
+			{xr_act_menu, XR_Path ("/user/hand/left/input/menu/click")},
+			{xr_act_menu, XR_Path ("/user/hand/right/input/menu/click")},
+			{xr_act_haptic, XR_Path ("/user/hand/left/output/haptic")},
+			{xr_act_haptic, XR_Path ("/user/hand/right/output/haptic")},
+		};
+		XR_SuggestProfile ("/interaction_profiles/khr/simple_controller", b, countof (b));
+	}
+
+	// pose actions each need a space before they can be located
+	for (hand = 0; hand < VR_HANDS; hand++)
+	{
+		memset (&space_info, 0, sizeof (space_info));
+		space_info.type = XR_TYPE_ACTION_SPACE_CREATE_INFO;
+		space_info.action = xr_act_pose;
+		space_info.subactionPath = xr_hand_path[hand];
+		space_info.poseInActionSpace.orientation.w = 1.0f;
+		xrCreateActionSpace (xr_session, &space_info, &xr_pose_space[hand]);
+
+		space_info.action = xr_act_aim;
+		xrCreateActionSpace (xr_session, &space_info, &xr_aim_space[hand]);
+	}
+
+	memset (&attach_info, 0, sizeof (attach_info));
+	attach_info.type = XR_TYPE_SESSION_ACTION_SETS_ATTACH_INFO;
+	attach_info.countActionSets = 1;
+	attach_info.actionSets = &xr_action_set;
+	if (XR_FAILED (xrAttachSessionActionSets (xr_session, &attach_info)))
+	{
+		Con_Warning ("OpenXR: could not attach action set; controllers disabled\n");
+		return;
+	}
+
+	xr_input_ready = true;
+	Con_Printf ("OpenXR: controllers ready\n");
+}
+
+/*
+===============
+XR_ReadFloat
+===============
+*/
+static float XR_ReadFloat (XrAction action, uint32_t hand)
+{
+	XrActionStateGetInfo info;
+	XrActionStateFloat	 state;
+
+	if (!action)
+		return 0.0f;
+
+	memset (&info, 0, sizeof (info));
+	info.type = XR_TYPE_ACTION_STATE_GET_INFO;
+	info.action = action;
+	info.subactionPath = xr_hand_path[hand];
+
+	memset (&state, 0, sizeof (state));
+	state.type = XR_TYPE_ACTION_STATE_FLOAT;
+
+	if (XR_FAILED (xrGetActionStateFloat (xr_session, &info, &state)) || !state.isActive)
+		return 0.0f;
+	return state.currentState;
+}
+
+/*
+===============
+XR_ReadBool
+===============
+*/
+static qboolean XR_ReadBool (XrAction action, uint32_t hand)
+{
+	XrActionStateGetInfo info;
+	XrActionStateBoolean state;
+
+	if (!action)
+		return false;
+
+	memset (&info, 0, sizeof (info));
+	info.type = XR_TYPE_ACTION_STATE_GET_INFO;
+	info.action = action;
+	info.subactionPath = xr_hand_path[hand];
+
+	memset (&state, 0, sizeof (state));
+	state.type = XR_TYPE_ACTION_STATE_BOOLEAN;
+
+	if (XR_FAILED (xrGetActionStateBoolean (xr_session, &info, &state)) || !state.isActive)
+		return false;
+	return state.currentState ? true : false;
+}
+
+/*
+===============
+XR_ReadStick
+===============
+*/
+static void XR_ReadStick (XrAction action, uint32_t hand, float out[2])
+{
+	XrActionStateGetInfo  info;
+	XrActionStateVector2f state;
+
+	out[0] = out[1] = 0.0f;
+	if (!action)
+		return;
+
+	memset (&info, 0, sizeof (info));
+	info.type = XR_TYPE_ACTION_STATE_GET_INFO;
+	info.action = action;
+	info.subactionPath = xr_hand_path[hand];
+
+	memset (&state, 0, sizeof (state));
+	state.type = XR_TYPE_ACTION_STATE_VECTOR2F;
+
+	if (XR_FAILED (xrGetActionStateVector2f (xr_session, &info, &state)) || !state.isActive)
+		return;
+	out[0] = state.currentState.x;
+	out[1] = state.currentState.y;
+}
+
+/*
+===============
+XR_LocateHand
+
+Same coordinate conversion the head uses (quakevr vr.cpp:3511).
+===============
+*/
+static qboolean XR_LocateHand (XrSpace space, XrTime time, vec3_t out_pos, vec3_t out_angles)
+{
+	XrSpaceLocation loc;
+	float			scale = VR_METERS_TO_UNITS;
+
+	if (space == XR_NULL_HANDLE)
+		return false;
+
+	memset (&loc, 0, sizeof (loc));
+	loc.type = XR_TYPE_SPACE_LOCATION;
+
+	if (XR_FAILED (xrLocateSpace (space, xr_space, time, &loc)))
+		return false;
+	if (!(loc.locationFlags & XR_SPACE_LOCATION_POSITION_VALID_BIT) || !(loc.locationFlags & XR_SPACE_LOCATION_ORIENTATION_VALID_BIT))
+		return false;
+
+	out_pos[0] = -loc.pose.position.z * scale;
+	out_pos[1] = -loc.pose.position.x * scale;
+	out_pos[2] = loc.pose.position.y * scale + vr_floor_offset.value;
+
+	XR_QuatToQuakeAngles (&loc.pose.orientation, out_angles);
+	return true;
+}
+
+/*
+===============
+VR_XR_SyncInput
+===============
+*/
+void VR_XR_SyncInput (void)
+{
+	XrActionsSyncInfo sync;
+	XrActiveActionSet active;
+	uint32_t		  hand;
+
+	if (!xr_input_ready || !VR_XR_SessionRunning ())
+		return;
+
+	memset (&active, 0, sizeof (active));
+	active.actionSet = xr_action_set;
+	active.subactionPath = XR_NULL_PATH;
+
+	memset (&sync, 0, sizeof (sync));
+	sync.type = XR_TYPE_ACTIONS_SYNC_INFO;
+	sync.countActiveActionSets = 1;
+	sync.activeActionSets = &active;
+
+	if (XR_FAILED (xrSyncActions (xr_session, &sync)))
+		return;
+
+	for (hand = 0; hand < VR_HANDS; hand++)
+	{
+		vr_hand_t *h = &vr_xr_hand[hand];
+
+		// located at predicted display time, like the head, so hands and view
+		// agree rather than drifting apart by a frame
+		h->tracked = XR_LocateHand (xr_pose_space[hand], xr_frame_state.predictedDisplayTime, h->pos, h->angles);
+		XR_LocateHand (xr_aim_space[hand], xr_frame_state.predictedDisplayTime, h->aim_pos, h->aim_angles);
+
+		h->trigger = XR_ReadFloat (xr_act_trigger, hand);
+		h->grip = XR_ReadFloat (xr_act_grip, hand);
+		XR_ReadStick (xr_act_stick, hand, h->stick);
+		h->btn_a = XR_ReadBool (xr_act_btn_a, hand);
+		h->btn_b = XR_ReadBool (xr_act_btn_b, hand);
+		h->btn_stick = XR_ReadBool (xr_act_btn_stick, hand);
+		h->btn_menu = XR_ReadBool (xr_act_menu, hand);
+	}
+}
+
+/*
+================================================================================
+
+	GAMEPLAY
+
+	Locomotion is head-relative: push the stick forward and you go where you are
+	looking, which is what almost every VR shooter does and what feels right
+	when your head and body can point different ways.
+
+================================================================================
+*/
+
+cvar_t vr_turn_speed = {"vr_turn_speed", "120", CVAR_ARCHIVE}; // degrees/sec, smooth turning
+cvar_t vr_snap_turn = {"vr_snap_turn", "45", CVAR_ARCHIVE};	   // degrees per snap; 0 = smooth
+cvar_t vr_deadzone = {"vr_deadzone", "0.2", CVAR_ARCHIVE};
+
+/*
+===============
+XR_ApplyDeadzone
+
+Rescales past the deadzone so control stays smooth from the edge of the
+deadzone outward, rather than jumping to a step.
+===============
+*/
+static float XR_ApplyDeadzone (float v)
+{
+	const float dz = CLAMP (0.0f, vr_deadzone.value, 0.9f);
+	float		mag = fabsf (v);
+
+	if (mag <= dz)
+		return 0.0f;
+	mag = (mag - dz) / (1.0f - dz);
+	return v < 0.0f ? -mag : mag;
+}
+
+/*
+===============
+VR_XR_AdjustAngles
+
+Right stick turns the body. Snap turning is the default because smooth turning
+is the single most reliable way to make people motion sick.
+===============
+*/
+void VR_XR_AdjustAngles (void)
+{
+	static qboolean snap_ready = true;
+	float			x;
+
+	if (!xr_input_ready || !VR_XR_SessionRunning ())
+		return;
+
+	x = XR_ApplyDeadzone (vr_xr_hand[VR_HAND_RIGHT].stick[0]);
+
+	if (vr_snap_turn.value > 0.0f)
+	{
+		// one turn per push; the stick has to return near centre to re-arm
+		if (fabsf (x) < 0.5f)
+			snap_ready = true;
+		else if (snap_ready)
+		{
+			snap_ready = false;
+			cl.viewangles[YAW] -= (x > 0.0f ? vr_snap_turn.value : -vr_snap_turn.value);
+		}
+	}
+	else
+	{
+		cl.viewangles[YAW] -= x * vr_turn_speed.value * host_frametime;
+	}
+}
+
+/*
+===============
+VR_XR_Move
+===============
+*/
+void VR_XR_Move (usercmd_t *cmd)
+{
+	float fwd, side;
+
+	if (!xr_input_ready || !VR_XR_SessionRunning ())
+		return;
+
+	fwd = XR_ApplyDeadzone (vr_xr_hand[VR_HAND_LEFT].stick[1]);
+	side = XR_ApplyDeadzone (vr_xr_hand[VR_HAND_LEFT].stick[0]);
+
+	// added, not assigned: keyboard input stays live alongside the controller
+	cmd->forwardmove += cl_forwardspeed.value * fwd;
+	cmd->sidemove += cl_sidespeed.value * side;
+
+	// grip on the left hand doubles as run, mirroring the speed key
+	if (vr_xr_hand[VR_HAND_LEFT].grip > 0.7f)
+	{
+		cmd->forwardmove *= cl_movespeedkey.value;
+		cmd->sidemove *= cl_movespeedkey.value;
+	}
+}
+
+/*
+===============
+VR_XR_Buttons
+===============
+*/
+unsigned int VR_XR_Buttons (void)
+{
+	unsigned int bits = 0;
+
+	if (!xr_input_ready || !VR_XR_SessionRunning ())
+		return 0;
+
+	if (vr_xr_hand[VR_HAND_RIGHT].trigger > 0.5f)
+		bits |= 1; // attack
+	if (vr_xr_hand[VR_HAND_RIGHT].btn_a || vr_xr_hand[VR_HAND_LEFT].btn_a)
+		bits |= 2; // jump
+
+	return bits;
+}
+
+/*
+===============
+VR_XR_Haptic
+===============
+*/
+void VR_XR_Haptic (int hand, float duration, float frequency, float amplitude)
+{
+	XrHapticActionInfo info;
+	XrHapticVibration  vibration;
+
+	if (!xr_input_ready || hand < 0 || hand >= VR_HANDS || !xr_act_haptic)
+		return;
+
+	memset (&vibration, 0, sizeof (vibration));
+	vibration.type = XR_TYPE_HAPTIC_VIBRATION;
+	vibration.duration = (XrDuration)(duration * 1000000000.0f); // seconds -> nanoseconds
+	vibration.frequency = frequency;
+	vibration.amplitude = CLAMP (0.0f, amplitude, 1.0f);
+
+	memset (&info, 0, sizeof (info));
+	info.type = XR_TYPE_HAPTIC_ACTION_INFO;
+	info.action = xr_act_haptic;
+	info.subactionPath = xr_hand_path[hand];
+
+	xrApplyHapticFeedback (xr_session, &info, (const XrHapticBaseHeader *)&vibration);
+}

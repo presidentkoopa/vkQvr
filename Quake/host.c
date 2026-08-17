@@ -1035,6 +1035,10 @@ static void _Host_Frame (double time)
 
 	if (!isDedicated)
 	{
+		// drive the XR session state machine before anything else this frame;
+		// the runtime needs to hear from us regularly or it drops the session
+		VR_XR_PumpEvents ();
+
 		// get new key events
 		Key_UpdateForDest ();
 		IN_UpdateInputMode ();
@@ -1127,7 +1131,32 @@ static void _Host_Frame (double time)
 	if (host_speeds.value)
 		time1 = Sys_DoubleTime ();
 
-	SCR_UpdateScreen (true);
+	// In VR the compositor owns frame pacing: xrWaitFrame blocks until the
+	// runtime wants the next frame. The flat window still renders as a mirror.
+	if (VR_XR_SessionRunning ())
+	{
+		qboolean should_render = VR_XR_BeginFrame ();
+		if (should_render)
+		{
+			// One pass per eye, each with its own pose and frustum. This needs
+			// the enlarged window swapchain (see GL_CreateSwapChain): both
+			// passes hold a window image simultaneously within the frame.
+			int eye;
+			for (eye = 0; eye < VR_XR_EYES; eye++)
+			{
+				vr_xr_current_eye = eye;
+				// reseed identically per eye so particles and gun bob agree
+				// between them, or the two images disagree and read as noise
+				// (quakevr vr.cpp:1590)
+				srand ((int)(cl.time * 1000));
+				SCR_UpdateScreen (true);
+			}
+			vr_xr_current_eye = -1;
+		}
+		VR_XR_EndFrame ();
+	}
+	else
+		SCR_UpdateScreen (true);
 
 	CL_RunParticles (); // johnfitz -- seperated from rendering
 
@@ -1262,6 +1291,7 @@ void Host_Init (void)
 		Modlist_Init ();  // johnfitz
 		DemoList_Init (); // ericw
 		SaveList_Init ();
+		VR_XR_Init (); // must precede VID_Init: the runtime dictates Vulkan instance/device requirements
 		VID_Init ();
 		IN_Init ();
 		TexMgr_Init (); // johnfitz
@@ -1350,6 +1380,7 @@ void Host_Shutdown (void)
 		S_Shutdown ();
 		IN_Shutdown ();
 		VID_Shutdown ();
+		VR_XR_Shutdown ();
 	}
 
 	Steam_Shutdown ();

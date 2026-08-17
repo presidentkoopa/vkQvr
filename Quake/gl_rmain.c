@@ -334,8 +334,10 @@ R_SetupMatrices
 */
 static void R_SetupMatrices ()
 {
-	// Projection matrix
-	GL_FrustumMatrix (vulkan_globals.projection_matrix, DEG2RAD (r_fovx), DEG2RAD (r_fovy));
+	// Projection matrix -- the runtime's asymmetric frustum when in VR,
+	// otherwise the stock symmetric one
+	if (!VR_XR_EyeProjectionMatrix (vulkan_globals.projection_matrix, gl_farclip.value))
+		GL_FrustumMatrix (vulkan_globals.projection_matrix, DEG2RAD (r_fovx), DEG2RAD (r_fovy));
 
 	// View matrix
 	float rotation_matrix[16];
@@ -388,6 +390,28 @@ static void R_SetupViewBeforeMark (void *unused)
 	if (!r_gpulightmapupdate.value)
 		R_PushDlights ();
 	R_AnimateLight ();
+
+	// Fold the head pose into the view before anything reads it. The body yaw
+	// still comes from the game (stick/mouse turning), the head rides on top:
+	// pitch and roll are the head's alone, and the positional offset has to be
+	// rotated into the body's frame or leaning would go the wrong way when the
+	// player is not facing world north.
+	{
+		float hmd_angles[3], hmd_offset[3];
+		if (VR_XR_EyePose (hmd_angles, hmd_offset))
+		{
+			const float body_yaw = DEG2RAD (r_refdef.viewangles[YAW]);
+			const float s = sinf (body_yaw), c = cosf (body_yaw);
+
+			r_refdef.vieworg[0] += hmd_offset[0] * c - hmd_offset[1] * s;
+			r_refdef.vieworg[1] += hmd_offset[0] * s + hmd_offset[1] * c;
+			r_refdef.vieworg[2] += hmd_offset[2];
+
+			r_refdef.viewangles[YAW] += hmd_angles[1];
+			r_refdef.viewangles[PITCH] = hmd_angles[0];
+			r_refdef.viewangles[ROLL] = hmd_angles[2];
+		}
+	}
 
 	// build the transformation matrix for the given view angles
 	VectorCopy (r_refdef.vieworg, r_origin);

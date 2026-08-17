@@ -361,6 +361,8 @@ void CL_AdjustAngles (void)
 	if (CL_AngleLocked ())
 		return;
 
+	VR_XR_AdjustAngles (); // right stick turns the body
+
 	if ((in_speed.state & 1) ^ (cl_alwaysrun.value != 0.0))
 		speed = host_frametime * cl_anglespeedkey.value;
 	else
@@ -444,6 +446,9 @@ void CL_BaseMove (usercmd_t *cmd)
 		cmd->sidemove *= cl_movespeedkey.value;
 		cmd->upmove *= cl_movespeedkey.value;
 	}
+
+	// controller locomotion, added on top so keyboard still works
+	VR_XR_Move (cmd);
 }
 
 void CL_FinishMove (usercmd_t *cmd)
@@ -465,6 +470,8 @@ void CL_FinishMove (usercmd_t *cmd)
 	if (in_use.state & 3)
 		bits |= 4;
 	in_use.state &= ~2;
+
+	bits |= VR_XR_Buttons (); // trigger = attack, A/X = jump
 
 	cmd->buttons = bits;
 	cmd->impulse = in_impulse;
