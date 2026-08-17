@@ -734,7 +734,13 @@ void V_CalcRefdef (void)
 
 	// refresh position
 	VectorCopy (ent->origin, r_refdef.vieworg);
-	r_refdef.vieworg[2] += cl.stats[STAT_VIEWHEIGHT] + bob;
+	// In VR the headset's own height IS the eye height, so Quake's assumed
+	// STAT_VIEWHEIGHT must not be added on top -- doing so puts the camera a
+	// view height (~3 feet) above where the player actually is. Head bob is
+	// dropped for the same reason: moving the camera the player is not moving
+	// is what makes people ill. quakevr does exactly this (view.cpp:1003-1012).
+	if (!VR_XR_SessionRunning ())
+		r_refdef.vieworg[2] += cl.stats[STAT_VIEWHEIGHT] + bob;
 
 	// never let it sit exactly on a node line, because a water plane can
 	// dissapear when viewed with the eye exactly on it.

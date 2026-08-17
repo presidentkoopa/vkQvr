@@ -5521,6 +5521,10 @@ static qboolean Mod_LoadMD5MeshModelData (qmodel_t *mod, const void *buffer, siz
 		{
 			surf->scale_origin[j] = 0;
 			surf->scale[j] = 1.0;
+			// snapshot for VR's per-weapon offsets; without these it would
+			// scale the model by zero and it would vanish
+			surf->original_scale_origin[j] = surf->scale_origin[j];
+			surf->original_scale[j] = surf->scale[j];
 		}
 
 		surf->numjoints = numjoints;
@@ -6153,6 +6157,9 @@ static void Mod_LoadMD3Model (qmodel_t *mod, const void *buffer)
 		{
 			surf->scale_origin[j] = 0;
 			surf->scale[j] = MD3_XYZ_SCALE;
+			// snapshot for VR's per-weapon offsets, as for MDL and MD5
+			surf->original_scale_origin[j] = surf->scale_origin[j];
+			surf->original_scale[j] = surf->scale[j];
 		}
 
 		// TODO: What to do with the shaders ?

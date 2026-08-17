@@ -42,6 +42,7 @@ static void XR_DestroySession (void);
 static void XR_AcquireEyes (void);
 static void XR_UpdateRoomscale (void);
 static void XR_InitHandTracking (void);
+void		VR_XR_ModAllModels (void);
 static int	XR_ComputeHotSpot (const vec3_t hand_world, const vec3_t player_origin);
 static void VR_XR_Calibrate_f (void);
 static void VR_XR_Recenter_f (void);
@@ -49,6 +50,16 @@ static void VR_XR_Recenter_f (void);
 // Finger tracking cvars, declared here because VR_XR_Init registers them well
 // before the finger-tracking section defines them. Defaults are quakevr's
 // (vr_cvars.cpp:173-187).
+cvar_t vr_gun_debug = {"vr_gun_debug", "0", CVAR_NONE};
+cvar_t vr_gun_nooffset = {"vr_gun_nooffset", "0", CVAR_NONE};
+
+// Pre-rotation of the weapon relative to the controller. quakevr applies this
+// to the controller matrix before deriving handrot, and every offset in the
+// per-weapon table was tuned in that rotated frame.
+// (quakevr vr.cpp:3137-3155; defaults vr_cvars.cpp:54, 69)
+cvar_t vr_gunangle = {"vr_gunangle", "32", CVAR_ARCHIVE};
+cvar_t vr_gunyaw = {"vr_gunyaw", "0", CVAR_ARCHIVE};
+cvar_t vr_gun_z_offset = {"vr_gun_z_offset", "0", CVAR_ARCHIVE};
 cvar_t vr_finger_grip_bias = {"vr_finger_grip_bias", "0.0", CVAR_ARCHIVE};
 cvar_t vr_finger_auto_close_thumb = {"vr_finger_auto_close_thumb", "1", CVAR_ARCHIVE};
 cvar_t vr_finger_blending = {"vr_finger_blending", "1", CVAR_ARCHIVE};
@@ -213,6 +224,11 @@ void VR_XR_Init (void)
 	Cvar_RegisterVariable (&vr_teleport_enabled);
 	Cvar_RegisterVariable (&vr_teleport_range);
 	Cvar_RegisterVariable (&vr_gun_wall_collision);
+	Cvar_RegisterVariable (&vr_gun_debug);
+	Cvar_RegisterVariable (&vr_gun_nooffset);
+	Cvar_RegisterVariable (&vr_gunangle);
+	Cvar_RegisterVariable (&vr_gunyaw);
+	Cvar_RegisterVariable (&vr_gun_z_offset);
 
 	Cvar_RegisterVariable (&vr_shoulder_offset_x);
 	Cvar_RegisterVariable (&vr_shoulder_offset_y);
@@ -848,6 +864,10 @@ void VR_XR_PumpEvents (void)
 				{
 					xr_session_running = true;
 					Con_Printf ("OpenXR: session running\n");
+					// A map may have loaded while the session was idle, so
+					// re-apply the model offsets now rather than waiting for
+					// the next map load.
+					VR_XR_ModAllModels ();
 				}
 			}
 			else if (xr_state == XR_SESSION_STATE_STOPPING && xr_session_running)
@@ -1185,16 +1205,23 @@ static void XR_QuatToQuakeAngles (const XrQuaternionf *q, float out_angles[3])
 	up[1] = -xr_up[0];
 	up[2] = xr_up[1];
 
-	out_angles[1] = RAD2DEG (atan2f (fwd[1], fwd[0]));					   // yaw
-	out_angles[0] = -RAD2DEG (asinf (CLAMP (-1.0f, fwd[2], 1.0f)));		   // pitch, inverted
+	out_angles[1] = RAD2DEG (atan2f (fwd[1], fwd[0]));				   // yaw
+	out_angles[0] = -RAD2DEG (asinf (CLAMP (-1.0f, fwd[2], 1.0f))); // pitch, inverted
+
 	{
-		// roll: how far "up" has rotated about the forward axis
-		float sy = sinf (DEG2RAD (out_angles[1])), cy = cosf (DEG2RAD (out_angles[1]));
-		float left[3] = {-sy, cy, 0.0f};
-		float dot_left = up[0] * left[0] + up[1] * left[1] + up[2] * left[2];
-		// negated: Quake's roll is positive tilting the other way to what the
-		// up-vector projection gives us
-		out_angles[2] = -RAD2DEG (asinf (CLAMP (-1.0f, dot_left, 1.0f)));
+		// Roll must come from atan2, not asin. asin is limited to +-90 and is
+		// symmetric, so a 120-degree wrist roll reports 60 and rolling further
+		// makes the weapon rotate backwards -- and because the model offset is
+		// rotated by this, a wrong roll also translates the gun.
+		// quakevr uses atan2 for the same reason (vr.cpp:404-405).
+		const float sy = sinf (DEG2RAD (out_angles[1]));
+		const float cy = cosf (DEG2RAD (out_angles[1]));
+		const float left[3] = {-sy, cy, 0.0f};
+		// "up" resolved against the roll-free left and world-up axes
+		const float dot_left = up[0] * left[0] + up[1] * left[1] + up[2] * left[2];
+		const float dot_up = up[2];
+
+		out_angles[2] = -RAD2DEG (atan2f (dot_left, dot_up));
 	}
 }
 
@@ -1857,7 +1884,7 @@ static qboolean XR_LocateHand (XrSpace space, XrTime time, vec3_t out_pos, vec3_
 
 	out_pos[0] = -loc.pose.position.z * scale;
 	out_pos[1] = -loc.pose.position.x * scale;
-	out_pos[2] = loc.pose.position.y * scale + vr_floor_offset.value;
+	out_pos[2] = loc.pose.position.y * scale + vr_floor_offset.value + vr_gun_z_offset.value;
 
 	XR_QuatToQuakeAngles (&loc.pose.orientation, out_angles);
 	return true;
@@ -2293,9 +2320,20 @@ void VR_XR_ApplyWeaponModelMod (aliashdr_t *hdr, const char *model_name)
 	correct = (vr_world_scale.value / 0.75f) * vr_gunmodelscale.value;
 
 	w = VR_FindWpnOffset (model_name);
-	if (!w || !VR_XR_SessionRunning () || !vr_hand_aiming.value)
+	if (vr_gun_nooffset.value)
+		w = NULL; // draw the model raw, to isolate the table from the position
+
+	// NB: deliberately not gated on the session running.
+	//
+	// This used to also reset when !VR_XR_SessionRunning(), but the session
+	// reports not-running whenever the headset is idle or off the head, and
+	// this only ran at map load. Loading a map in that state stripped every
+	// weapon offset for the rest of the map, with nothing to re-apply it --
+	// losing 10 to 41 units of offset and a 0.25-0.8 scale factor. quakevr
+	// applies the mod unconditionally (vr.cpp:670-676) for exactly this reason.
+	if (!w)
 	{
-		// not a known weapon, or VR is not driving the gun: put it back
+		// genuinely not a weapon we have numbers for: leave the model alone
 		for (i = 0; i < 3; i++)
 		{
 			hdr->scale[i] = hdr->original_scale[i];
@@ -2303,6 +2341,11 @@ void VR_XR_ApplyWeaponModelMod (aliashdr_t *hdr, const char *model_name)
 		}
 		return;
 	}
+
+	// A model whose originals were never snapshotted (MD5/MD3 loaders do not
+	// set them) would otherwise be scaled to zero and vanish.
+	if (hdr->original_scale[0] == 0.0f && hdr->original_scale[1] == 0.0f && hdr->original_scale[2] == 0.0f)
+		return;
 
 	for (i = 0; i < 3; i++)
 		hdr->scale[i] = hdr->original_scale[i] * w->scale * correct;
@@ -2494,6 +2537,10 @@ qboolean VR_XR_WeaponPose (const vec3_t player_origin, vec3_t out_origin, vec3_t
 	if (!h->tracked)
 		return false;
 
+	// Diagnostic: report once per second whether the gun is actually being
+	// placed at the hand, and where. Guessing at this from the headset has not
+	// been productive.
+
 	// same rebase the view uses: drop whatever room-scale walking already moved
 	// the player, so the gun does not drift away from them
 	local[0] = h->pos[0] - xr_roomscale_consumed[0] + vr_gun_offset_x.value;
@@ -2504,17 +2551,51 @@ qboolean VR_XR_WeaponPose (const vec3_t player_origin, vec3_t out_origin, vec3_t
 	s = sinf (yaw);
 	c = cosf (yaw);
 
+	// Same base as the camera: player origin plus the tracked offset, with no
+	// STAT_VIEWHEIGHT. The headset and controllers already report real heights.
 	out_origin[0] = player_origin[0] + local[0] * c - local[1] * s;
 	out_origin[1] = player_origin[1] + local[0] * s + local[1] * c;
 	out_origin[2] = player_origin[2] + local[2];
 
-	// the aim ray is what the weapon should point along, not the grip
-	VectorCopy (h->aim_angles, out_angles);
+	// Grip orientation, not the aim ray.
+	//
+	// quakevr derives everything -- weapon angles, aim, QC handrot -- from the
+	// single controller orientation (vr.cpp:2779). Pairing the grip *position*
+	// with the aim *orientation* means the model offset, which is applied after
+	// the rotation, gets swung by the 40-60 degree difference between those two
+	// frames, and swung differently as the wrist turns. The gun then orbits the
+	// controller instead of sitting on it.
+	VectorCopy (h->angles, out_angles);
 	out_angles[YAW] += cl.viewangles[YAW];
+
+	// The offset table was authored in a frame pre-rotated by vr_gunangle,
+	// which quakevr applies to the controller matrix before producing handrot
+	// (vr.cpp:3137-3155, default 32 degrees -- vr_cvars.cpp:54). Without it the
+	// weapon is rotated ~32 degrees wrong and translated by sin(32)*|offset|.
+	out_angles[PITCH] -= vr_gunangle.value;
+	out_angles[YAW] += vr_gunyaw.value;
 
 	// Keep the barrel out of walls before the pitch is flipped for drawing,
 	// since the collision sweep needs a real direction.
 	VR_XR_ResolveGunCollision (out_origin, out_angles, 24.0f);
+
+	// A light exactly at the computed hand position. If this sits on your
+	// controller then the position is right and any remaining error is in the
+	// model offsets; if it does not, the error is in the position maths.
+	if (vr_gun_debug.value && cls.state == ca_connected && cl.worldmodel)
+	{
+		dlight_t *dl = CL_AllocDlight (-2);
+		if (dl)
+		{
+			VectorCopy (out_origin, dl->origin);
+			dl->radius = 40.0f;
+			dl->die = cl.time + 0.05f;
+			dl->decay = 0.0f;
+			dl->color[0] = 0.2f;
+			dl->color[1] = 0.4f;
+			dl->color[2] = 1.0f;
+		}
+	}
 
 	// viewmodels are drawn with inverted pitch, matching CalcGunAngle
 	out_angles[PITCH] = -out_angles[PITCH];
@@ -2996,6 +3077,7 @@ static void XR_HandToWorld (const vr_hand_t *h, const vec3_t player_origin, vec3
 	local[1] = h->pos[1] - xr_roomscale_consumed[1];
 	local[2] = h->pos[2];
 
+	// same base as the camera and the gun -- no STAT_VIEWHEIGHT
 	out_pos[0] = player_origin[0] + local[0] * c - local[1] * s;
 	out_pos[1] = player_origin[1] + local[0] * s + local[1] * c;
 	out_pos[2] = player_origin[2] + local[2];
@@ -3272,7 +3354,11 @@ void VR_XR_UpdateTeleport (void)
 ================================================================================
 */
 
-cvar_t vr_gun_wall_collision = {"vr_gun_wall_collision", "1", CVAR_ARCHIVE};
+// Default off until the gun is confirmed sitting correctly in the hand: this
+// runs a trace from the render path every frame, so if it misbehaves it looks
+// exactly like the weapon not being attached at all.
+cvar_t vr_gun_wall_collision = {"vr_gun_wall_collision", "0", CVAR_ARCHIVE};
+
 
 static qboolean xr_gun_colliding = false;
 
@@ -3343,7 +3429,11 @@ void VR_XR_ResolveGunCollision (vec3_t hand_pos, const vec3_t hand_angles, float
 
 	trace = SV_Move (hand_pos, mins, maxs, muzzle, MOVE_NORMAL, player);
 
-	if (trace.fraction < 1.0f)
+	// startsolid/allsolid mean the hand itself is already inside geometry --
+	// standing close to a wall, say. The trace result is meaningless there and
+	// acting on it snaps the gun to the hand's origin, which reads as the
+	// weapon flying around rather than being held.
+	if (trace.fraction < 1.0f && !trace.startsolid && !trace.allsolid)
 	{
 		xr_gun_colliding = true;
 		// pull the hand back by however far the muzzle was blocked

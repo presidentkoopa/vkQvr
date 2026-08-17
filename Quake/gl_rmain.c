@@ -282,6 +282,18 @@ void R_SetFrustum (float fovx, float fovy)
 {
 	int i;
 
+	// VR: the projection matrix comes from the runtime and is an asymmetric
+	// frustum, wider than the symmetric fovx/fovy this culls against -- so
+	// geometry near the outer edge of each eye gets culled while still being
+	// inside what actually gets drawn, leaving holes at the edges of view.
+	// Widen the cull frustum past what is drawn; over-drawing costs a little,
+	// wrongly culling is visible. quakevr does the same (gl_rmain.cpp:569-573).
+	if (VR_XR_SessionRunning ())
+	{
+		fovx += 25.0f;
+		fovy += 25.0f; // the eye frustum is asymmetric vertically too
+	}
+
 	TurnVector (frustum[0].normal, vpn, vright, fovx / 2 - 90); // right plane
 	TurnVector (frustum[1].normal, vpn, vright, 90 - fovx / 2); // left plane
 	TurnVector (frustum[2].normal, vpn, vup, 90 - fovy / 2);	// bottom plane
@@ -599,7 +611,17 @@ void R_DrawViewModel (cb_context_t *cbx)
 	R_BeginDebugUtilsLabel (cbx, "View Model");
 
 	// hack the depth range to prevent view model from poking into walls
-	GL_Viewport (cbx, r_refdef.vrect.x, glheight - r_refdef.vrect.y - r_refdef.vrect.height, r_refdef.vrect.width, r_refdef.vrect.height, 0.7f, 1.0f);
+	//
+	// In VR the weapon is a real object held at arm's length, not a sprite
+	// pinned to the camera: squashing it into the near 30% of the depth buffer
+	// destroys its apparent distance and it stops reading as being in the hand.
+	// Wall clipping is handled properly instead, by pulling the hand back --
+	// see VR_XR_ResolveGunCollision.
+	{
+		const float depth_near = VR_XR_SessionRunning () ? 0.0f : 0.7f;
+		GL_Viewport (
+			cbx, r_refdef.vrect.x, glheight - r_refdef.vrect.y - r_refdef.vrect.height, r_refdef.vrect.width, r_refdef.vrect.height, depth_near, 1.0f);
+	}
 
 	int aliaspolys = 0;
 	R_DrawAliasModel (cbx, currententity, &aliaspolys);

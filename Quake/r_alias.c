@@ -513,7 +513,9 @@ void R_DrawAliasModel (cb_context_t *cbx, entity_t *e, int *aliaspolys)
 	R_RotateForEntity (model_matrix, lerpdata.origin, lerpdata.angles, e->netstate.scale);
 
 	float fovscale = 1.0f;
-	if (e == &cl.viewent && r_refdef.basefov > 90.f && cl_gun_fovscale.value)
+	// VR: the gun is placed in world space by the hand pose, so this widescreen
+	// compensation only skews it
+	if (e == &cl.viewent && r_refdef.basefov > 90.f && cl_gun_fovscale.value && !VR_XR_SessionRunning ())
 	{
 		fovscale = tan (r_refdef.basefov * (0.5f * M_PI / 180.f));
 		fovscale = 1.f + (fovscale - 1.f) * cl_gun_fovscale.value;
@@ -641,7 +643,9 @@ void R_DrawAliasModel_ShowTris (cb_context_t *cbx, entity_t *e)
 	R_RotateForEntity (model_matrix, lerpdata.origin, lerpdata.angles, e->netstate.scale);
 
 	float fovscale = 1.0f;
-	if (e == &cl.viewent && r_refdef.basefov > 90.f)
+	// VR: the gun is positioned in world space by the hand pose, so this
+	// widescreen compensation only skews it
+	if (e == &cl.viewent && r_refdef.basefov > 90.f && !VR_XR_SessionRunning ())
 	{
 		fovscale = tan (r_refdef.basefov * (0.5f * M_PI / 180.f));
 		fovscale = 1.f + (fovscale - 1.f) * cl_gun_fovscale.value;
@@ -690,7 +694,9 @@ void R_DrawAliasModel_ShowSkel (cb_context_t *cbx, entity_t *e)
 	R_RotateForEntity (model_matrix, lerpdata.origin, lerpdata.angles, e->netstate.scale);
 
 	float fovscale = 1.0f;
-	if (e == &cl.viewent && r_refdef.basefov > 90.f)
+	// VR: the gun is positioned in world space by the hand pose, so this
+	// widescreen compensation only skews it
+	if (e == &cl.viewent && r_refdef.basefov > 90.f && !VR_XR_SessionRunning ())
 	{
 		fovscale = tan (r_refdef.basefov * (0.5f * M_PI / 180.f));
 		fovscale = 1.f + (fovscale - 1.f) * cl_gun_fovscale.value;
