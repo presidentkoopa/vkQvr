@@ -2395,8 +2395,6 @@ void VR_XR_ApplyWeaponModelMod (aliashdr_t *hdr, const char *model_name)
 	correct = (vr_world_scale.value / 0.75f) * vr_gunmodelscale.value;
 
 	w = VR_FindWpnOffset (model_name);
-	if (!vr_wpn_offsets.value)
-		w = NULL; // table is authored in quakevr's frame; see the cvar note
 
 	// NB: deliberately not gated on the session running.
 	//
@@ -2422,12 +2420,26 @@ void VR_XR_ApplyWeaponModelMod (aliashdr_t *hdr, const char *model_name)
 	if (hdr->original_scale[0] == 0.0f && hdr->original_scale[1] == 0.0f && hdr->original_scale[2] == 0.0f)
 		return;
 
+	// Scale is always applied. It is a plain multiplier with no direction to
+	// it, so it carries across from quakevr unchanged -- and it matters: the
+	// table runs from 0.25 to 0.8, so dropping it draws every weapon between
+	// 1.25x and 4x too large.
 	for (i = 0; i < 3; i++)
 		hdr->scale[i] = hdr->original_scale[i] * w->scale * correct;
 
-	hdr->scale_origin[0] = (hdr->original_scale_origin[0] + w->ofs_x) * correct;
-	hdr->scale_origin[1] = (hdr->original_scale_origin[1] + w->ofs_y) * correct;
-	hdr->scale_origin[2] = (hdr->original_scale_origin[2] + w->ofs_z + vr_gunmodely.value) * correct;
+	// The position offset is the part that does not carry across, because it
+	// is measured in quakevr's controller frame. See the vr_wpn_offsets note.
+	if (vr_wpn_offsets.value)
+	{
+		hdr->scale_origin[0] = (hdr->original_scale_origin[0] + w->ofs_x) * correct;
+		hdr->scale_origin[1] = (hdr->original_scale_origin[1] + w->ofs_y) * correct;
+		hdr->scale_origin[2] = (hdr->original_scale_origin[2] + w->ofs_z + vr_gunmodely.value) * correct;
+	}
+	else
+	{
+		for (i = 0; i < 3; i++)
+			hdr->scale_origin[i] = hdr->original_scale_origin[i] * correct;
+	}
 }
 
 /*
@@ -3690,7 +3702,12 @@ static void XR_SetupHandEntity (int hand, const vec3_t player_origin)
 	VectorCopy (world, palm->origin);
 	VectorCopy (angles, palm->angles);
 	palm->angles[PITCH] = -palm->angles[PITCH]; // alias models draw pitch inverted
-	palm->model = Mod_ForName ("progs/hand.mdl", false);
+	// hand_base.mdl, not hand.mdl. hand.mdl is quakevr's empty-hand *weapon*
+	// placeholder, which it registers with scale 0 (vr.cpp:1069) precisely so
+	// it never draws; it is a whole closed fist, far too big for a palm the
+	// five finger models attach to. The visible hand is hand_entities.base,
+	// and view.cpp:1368 names that model hand_base.mdl.
+	palm->model = Mod_ForName ("progs/hand_base.mdl", false);
 	palm->frame = 0;
 	palm->colormap = vid.colormap;
 	palm->alpha = ENTALPHA_DEFAULT;
