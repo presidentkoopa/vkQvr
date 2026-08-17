@@ -57,7 +57,7 @@ cvar_t vr_gun_nooffset = {"vr_gun_nooffset", "0", CVAR_NONE};
 // to the controller matrix before deriving handrot, and every offset in the
 // per-weapon table was tuned in that rotated frame.
 // (quakevr vr.cpp:3137-3155; defaults vr_cvars.cpp:54, 69)
-cvar_t vr_gunangle = {"vr_gunangle", "32", CVAR_ARCHIVE};
+cvar_t vr_gunangle = {"vr_gunangle", "0", CVAR_ARCHIVE};
 cvar_t vr_gunyaw = {"vr_gunyaw", "0", CVAR_ARCHIVE};
 cvar_t vr_gun_z_offset = {"vr_gun_z_offset", "0", CVAR_ARCHIVE};
 cvar_t vr_finger_grip_bias = {"vr_finger_grip_bias", "0.0", CVAR_ARCHIVE};
@@ -2164,7 +2164,36 @@ cvar_t vr_roomscale_mult = {"vr_roomscale_mult", "1", CVAR_ARCHIVE};
 
 // Point the weapon with the controller instead of the head.
 cvar_t vr_hand_aiming = {"vr_hand_aiming", "1", CVAR_ARCHIVE};
+
+// Swaps the controller roles, so the weapon is held in the left hand and the
+// off-hand functions move to the right. quakevr defaults this off and applies
+// it where the controller is identified (vr_cvars.cpp:36, vr.cpp:2737-2748).
+cvar_t vr_lefthanded = {"vr_lefthanded", "0", CVAR_ARCHIVE};
+
+// Derived from vr_lefthanded; kept as a cvar so it can still be forced.
 cvar_t vr_aim_hand = {"vr_aim_hand", "1", CVAR_ARCHIVE}; // 1 = right
+
+/*
+===============
+VR_XR_MainHand / VR_XR_OffHand
+
+One place that decides which physical controller is which. Everything that
+cares -- aiming, the weapon model, melee, weapon switching, teleport, holster
+hotspots -- goes through these, so handedness cannot end up inconsistent
+between systems.
+===============
+*/
+int VR_XR_MainHand (void)
+{
+	if (vr_lefthanded.value)
+		return VR_HAND_LEFT;
+	return vr_aim_hand.value ? VR_HAND_RIGHT : VR_HAND_LEFT;
+}
+
+int VR_XR_OffHand (void)
+{
+	return VR_XR_MainHand () ^ 1;
+}
 
 // Where the gun model sits relative to the hand. Quake's viewmodels have their
 // origin at the shoulder end rather than the grip, so it needs pushing forward.
@@ -2542,7 +2571,7 @@ qboolean VR_XR_WeaponPose (const vec3_t player_origin, vec3_t out_origin, vec3_t
 	if (!xr_input_ready || !vr_hand_aiming.value || !VR_XR_SessionRunning ())
 		return false;
 
-	hand = vr_aim_hand.value ? VR_HAND_RIGHT : VR_HAND_LEFT;
+	hand = VR_XR_MainHand ();
 	h = &vr_xr_hand[hand];
 	if (!h->tracked)
 		return false;
@@ -2553,9 +2582,9 @@ qboolean VR_XR_WeaponPose (const vec3_t player_origin, vec3_t out_origin, vec3_t
 
 	// Head-relative in XY, absolute in Z -- same basis as the camera and the QC
 	// hand positions, so all three agree wherever the player stands.
-	local[0] = h->pos[0] - xr_last_head_pos[0] + vr_gun_offset_x.value;
-	local[1] = h->pos[1] - xr_last_head_pos[1] + vr_gun_offset_y.value;
-	local[2] = h->pos[2] + vr_gun_offset_z.value;
+	local[0] = h->aim_pos[0] - xr_last_head_pos[0] + vr_gun_offset_x.value;
+	local[1] = h->aim_pos[1] - xr_last_head_pos[1] + vr_gun_offset_y.value;
+	local[2] = h->aim_pos[2] + vr_gun_offset_z.value;
 
 	yaw = DEG2RAD (cl.viewangles[YAW]);
 	s = sinf (yaw);
@@ -2567,21 +2596,21 @@ qboolean VR_XR_WeaponPose (const vec3_t player_origin, vec3_t out_origin, vec3_t
 	out_origin[1] = player_origin[1] + local[0] * s + local[1] * c;
 	out_origin[2] = player_origin[2] + local[2];
 
-	// Grip orientation, not the aim ray.
+	// Aim pose, for position and orientation both.
 	//
-	// quakevr derives everything -- weapon angles, aim, QC handrot -- from the
-	// single controller orientation (vr.cpp:2779). Pairing the grip *position*
-	// with the aim *orientation* means the model offset, which is applied after
-	// the rotation, gets swung by the 40-60 degree difference between those two
-	// frames, and swung differently as the wrist turns. The gun then orbits the
-	// controller instead of sitting on it.
-	VectorCopy (h->angles, out_angles);
+	// quakevr uses a single controller orientation for everything (vr.cpp:2779)
+	// and corrects it with vr_gunangle, because OpenVR exposes one pose. OpenXR
+	// exposes two with different conventions: grip is the controller's own
+	// frame -- on a Touch controller its forward axis runs along the forearm,
+	// which points the weapon back at the player -- while aim is defined as the
+	// pointing ray. Aim is therefore the correct analogue, and using it for
+	// position as well keeps everything in one frame, so the model offset is
+	// not swung by a grip/aim frame difference as the wrist turns.
+	//
+	// vr_gunangle consequently defaults to 0 here: the aim pose already
+	// incorporates the correction quakevr's 32 degrees was applying by hand.
+	VectorCopy (h->aim_angles, out_angles);
 	out_angles[YAW] += cl.viewangles[YAW];
-
-	// The offset table was authored in a frame pre-rotated by vr_gunangle,
-	// which quakevr applies to the controller matrix before producing handrot
-	// (vr.cpp:3137-3155, default 32 degrees -- vr_cvars.cpp:54). Without it the
-	// weapon is rotated ~32 degrees wrong and translated by sin(32)*|offset|.
 	out_angles[PITCH] -= vr_gunangle.value;
 	out_angles[YAW] += vr_gunyaw.value;
 
@@ -2628,7 +2657,7 @@ qboolean VR_XR_AimAngles (vec3_t out_angles)
 	if (!xr_input_ready || !vr_hand_aiming.value || !VR_XR_SessionRunning ())
 		return false;
 
-	hand = vr_aim_hand.value ? VR_HAND_RIGHT : VR_HAND_LEFT;
+	hand = VR_XR_MainHand ();
 	if (!vr_xr_hand[hand].tracked)
 		return false;
 
@@ -2873,7 +2902,7 @@ unsigned int VR_XR_Buttons (void)
 	static int		last_health = 0;
 
 	unsigned int bits = 0;
-	int			 aim = vr_aim_hand.value ? VR_HAND_RIGHT : VR_HAND_LEFT;
+	int			 aim = VR_XR_MainHand ();
 	qboolean	 firing;
 
 	if (!xr_input_ready || !VR_XR_SessionRunning ())
@@ -2934,7 +2963,7 @@ and the stick has to return near centre before it fires again.
 int VR_XR_Impulse (void)
 {
 	static qboolean armed = true;
-	const int		off_hand = vr_aim_hand.value ? VR_HAND_LEFT : VR_HAND_RIGHT;
+	const int		off_hand = VR_XR_OffHand ();
 	float			x;
 
 	if (!xr_input_ready || !VR_XR_SessionRunning ())
@@ -3103,7 +3132,7 @@ static void XR_HandToWorld (const vr_hand_t *h, const vec3_t player_origin, vec3
 	// QC (view.cpp:723, vr.cpp:2840, 2857); publishing a different one here
 	// would put holster geometry and muzzle direction out of step with what the
 	// player can see.
-	VectorCopy (h->angles, out_angles);
+	VectorCopy (h->aim_angles, out_angles);
 	out_angles[YAW] += cl.viewangles[YAW];
 	out_angles[PITCH] -= vr_gunangle.value;
 	out_angles[YAW] += vr_gunyaw.value;
@@ -3133,7 +3162,7 @@ void VR_XR_WriteEdictFields (edict_t *ed)
 	f = &qcvm->extfields;
 	VectorCopy (ed->v.origin, origin);
 
-	main_hand = vr_aim_hand.value ? VR_HAND_RIGHT : VR_HAND_LEFT;
+	main_hand = VR_XR_MainHand ();
 	off_hand = main_hand ^ 1;
 
 	// main hand
@@ -3241,7 +3270,7 @@ VR_XR_UpdateTeleport
 */
 void VR_XR_UpdateTeleport (void)
 {
-	const int off_hand = vr_aim_hand.value ? VR_HAND_LEFT : VR_HAND_RIGHT;
+	const int off_hand = VR_XR_OffHand ();
 	vec3_t	  mins, maxs, fwd, right, up, angles, start, target;
 	trace_t	  trace;
 	edict_t	 *player;
