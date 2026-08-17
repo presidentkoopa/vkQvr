@@ -243,6 +243,14 @@ typedef struct
 	int				 num_efragallocs;
 	entity_t		 viewent; // the gun model
 
+	// VR body parts, drawn like the view model. quakevr keeps the same set:
+	// a torso plus, per hand, a palm and five finger models whose frame index
+	// is driven by how far that finger is curled. (quakevr client.hpp:260-286)
+	entity_t vrtorso;
+	entity_t vrhand[2];			 // palm
+	entity_t vrfinger[2][5];	 // thumb, index, middle, ring, pinky
+	entity_t vrlegholster[2];	 // hip holster models
+
 	entity_t *entities; // spike -- moved into here
 	int		  max_edicts;
 	int		  num_entities;

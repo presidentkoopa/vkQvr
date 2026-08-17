@@ -600,6 +600,36 @@ void R_DrawViewModel (cb_context_t *cbx)
 		return;
 
 	entity_t *currententity = &cl.viewent;
+
+	// VR body: torso, palms and fingers are drawn on the same path as the
+	// weapon, since they are all things attached to the player rather than
+	// placed in the world. quakevr does the same (gl_rmain.cpp:1592).
+	if (VR_XR_SessionRunning ())
+	{
+		entity_t *body[1 + VR_HANDS * 6];
+		int		  n = 0, hand, f;
+
+		body[n++] = &cl.vrtorso;
+		for (hand = 0; hand < VR_HANDS; hand++)
+		{
+			body[n++] = &cl.vrhand[hand];
+			for (f = 0; f < 5; f++)
+				body[n++] = &cl.vrfinger[hand][f];
+		}
+
+		R_BeginDebugUtilsLabel (cbx, "VR Body");
+		for (f = 0; f < n; f++)
+		{
+			int polys = 0;
+			if (!body[f]->model || body[f]->model->type != mod_alias)
+				continue;
+			R_DrawAliasModel (cbx, body[f], &polys);
+			Atomic_AddUInt32 (&rs_aliaspolys, polys);
+			Atomic_IncrementUInt32 (&rs_aliaspasses);
+		}
+		R_EndDebugUtilsLabel (cbx);
+	}
+
 	if (!currententity->model)
 		return;
 

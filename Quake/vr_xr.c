@@ -3578,6 +3578,127 @@ static int XR_ComputeHotSpot (const vec3_t hand_world, const vec3_t player_origi
 }
 
 /*
+================================================================================
+
+	VR BODY
+
+	The player can look down and see a torso, and see their own hands with
+	fingers that follow the controller's grip. These are ordinary alias
+	entities positioned each frame and drawn through the view-model path, the
+	same arrangement quakevr uses (client.hpp:260-286, gl_rmain.cpp:1592).
+
+	Finger models carry six frames from open to closed; the curl computed in
+	XR_UpdateFingers selects one.
+
+================================================================================
+*/
+
+static const char *xr_finger_models[5] = {
+	"progs/finger_thumb.mdl", "progs/finger_index.mdl", "progs/finger_middle.mdl", "progs/finger_ring.mdl", "progs/finger_pinky.mdl"};
+
+/*
+===============
+XR_SetupHandEntity
+
+Places the palm and its five fingers at a hand. All six share the hand's
+transform; only the frame differs per finger.
+===============
+*/
+static void XR_SetupHandEntity (int hand, const vec3_t player_origin)
+{
+	const vr_hand_t *h = &vr_xr_hand[hand];
+	entity_t		*palm = &cl.vrhand[hand];
+	vec3_t			 world, angles, vel;
+	int				 i;
+
+	if (!h->tracked)
+	{
+		// no pose this frame: draw nothing rather than leave it where it was
+		palm->model = NULL;
+		for (i = 0; i < 5; i++)
+			cl.vrfinger[hand][i].model = NULL;
+		return;
+	}
+
+	XR_HandToWorld (h, player_origin, world, angles, vel);
+
+	VectorCopy (world, palm->origin);
+	VectorCopy (angles, palm->angles);
+	palm->angles[PITCH] = -palm->angles[PITCH]; // alias models draw pitch inverted
+	palm->model = Mod_ForName ("progs/hand.mdl", false);
+	palm->frame = 0;
+	palm->colormap = vid.colormap;
+	palm->alpha = ENTALPHA_DEFAULT;
+
+	for (i = 0; i < 5; i++)
+	{
+		entity_t *f = &cl.vrfinger[hand][i];
+
+		VectorCopy (palm->origin, f->origin);
+		VectorCopy (palm->angles, f->angles);
+		f->model = Mod_ForName (xr_finger_models[i], false);
+		// curl 0..5 selects the frame; clamp because a model may ship fewer
+		f->frame = (int)CLAMP (0.0f, h->finger[i], 5.0f);
+		f->colormap = vid.colormap;
+		f->alpha = ENTALPHA_DEFAULT;
+	}
+}
+
+/*
+===============
+VR_XR_SetupBodyEntities
+===============
+*/
+void VR_XR_SetupBodyEntities (void)
+{
+	entity_t *player;
+	vec3_t	  fwd, right, up, yaw_only;
+	float	  head_height;
+	int		  hand;
+
+	if (!VR_XR_SessionRunning () || cls.state != ca_connected || cls.signon != SIGNONS)
+		return;
+	if (cl.viewentity <= 0 || cl.viewentity >= cl.max_edicts || !cl.entities)
+		return;
+
+	player = &cl.entities[cl.viewentity];
+
+	for (hand = 0; hand < VR_HANDS; hand++)
+		XR_SetupHandEntity (hand, player->origin);
+
+	// --- torso (quakevr V_SetupVRTorsoViewEnt, view.cpp:1222-1249) ---
+	if (!vr_vrtorso_enabled.value)
+	{
+		cl.vrtorso.model = NULL;
+		return;
+	}
+
+	yaw_only[PITCH] = 0.0f;
+	yaw_only[YAW] = cl.viewangles[YAW];
+	yaw_only[ROLL] = 0.0f;
+	AngleVectors (yaw_only, fwd, right, up);
+
+	cl.vrtorso.angles[PITCH] = vr_vrtorso_pitch.value;
+	cl.vrtorso.angles[YAW] = cl.viewangles[YAW] + vr_vrtorso_yaw.value;
+	cl.vrtorso.angles[ROLL] = vr_vrtorso_roll.value;
+
+	cl.vrtorso.model = Mod_ForName ("progs/vrtorso.mdl", false);
+	cl.vrtorso.frame = 0;
+	cl.vrtorso.colormap = vid.colormap;
+	cl.vrtorso.alpha = ENTALPHA_DEFAULT;
+
+	VectorCopy (player->origin, cl.vrtorso.origin);
+	VectorMA (cl.vrtorso.origin, vr_vrtorso_x_offset.value, fwd, cl.vrtorso.origin);
+	VectorMA (cl.vrtorso.origin, vr_vrtorso_y_offset.value, right, cl.vrtorso.origin);
+
+	// the torso hangs from the head, so it ducks when the player physically
+	// crouches (quakevr view.cpp:1245)
+	head_height = xr_head_pos_valid ? xr_last_head_pos[2] : 0.0f;
+	cl.vrtorso.origin[2] += (head_height / VR_METERS_TO_UNITS) * vr_vrtorso_head_z_mult.value;
+	cl.vrtorso.origin[2] += vr_vrtorso_z_offset.value;
+}
+
+/*
 ===============
 VR_XR_HandTouch
 

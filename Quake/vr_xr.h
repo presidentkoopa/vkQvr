@@ -210,6 +210,10 @@ void VR_XR_ModAllWeapons (void);
 // weapons plus the player's body and leg holsters (quakevr VR_ModAllModels)
 void VR_XR_ModAllModels (void);
 
+// Positions the VR body: torso, both hands, and the per-finger models whose
+// frame is driven by finger curl. Called once per frame from V_CalcRefdef.
+void VR_XR_SetupBodyEntities (void);
+
 extern cvar_t vr_vrtorso_enabled;
 extern cvar_t vr_vrtorso_x_offset;
 extern cvar_t vr_vrtorso_y_offset;

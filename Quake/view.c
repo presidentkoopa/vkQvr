@@ -796,6 +796,9 @@ void V_CalcRefdef (void)
 			// jarring than watching it teleport.
 			view->model = NULL;
 		}
+
+		// torso, hands and fingers, positioned from the same poses
+		VR_XR_SetupBodyEntities ();
 	}
 
 	// johnfitz -- removed all gun position fudging code (was used to keep gun from getting covered by sbar)
