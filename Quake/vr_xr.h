@@ -151,5 +151,7 @@ unsigned int VR_XR_Buttons (void);
 extern cvar_t vr_turn_speed;
 extern cvar_t vr_snap_turn;
 extern cvar_t vr_deadzone;
+extern cvar_t vr_roomscale;
+extern cvar_t vr_roomscale_mult;
 
 #endif /* _VR_XR_H */

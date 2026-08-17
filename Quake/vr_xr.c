@@ -40,6 +40,17 @@ static XrSystemId xr_system = XR_NULL_SYSTEM_ID;
 // defined further down with the session statics
 static void XR_DestroySession (void);
 static void XR_AcquireEyes (void);
+static void XR_UpdateRoomscale (void);
+
+// Room-scale bookkeeping. Head position in play space (Quake units) last frame,
+// the delta to hand to the movement command, and the running total already
+// turned into player movement -- the view subtracts that, otherwise a step
+// forward moves both player and camera and you travel twice as far as you
+// walked. (quakevr vr.cpp:2691-2692)
+static vec3_t	xr_last_head_pos;
+static vec3_t	xr_roomscale_consumed;
+static vec3_t	xr_roomscale_delta;
+static qboolean xr_head_pos_valid = false;
 
 // mathlib.h only provides the one direction
 #define RAD2DEG(a) ((a) / M_PI_DIV_180)
@@ -126,6 +137,8 @@ void VR_XR_Init (void)
 	Cvar_RegisterVariable (&vr_turn_speed);
 	Cvar_RegisterVariable (&vr_snap_turn);
 	Cvar_RegisterVariable (&vr_deadzone);
+	Cvar_RegisterVariable (&vr_roomscale);
+	Cvar_RegisterVariable (&vr_roomscale_mult);
 
 	if (COM_CheckParm ("-novr") || !COM_CheckParm ("-vr"))
 		return; // flat mode; say nothing
@@ -830,6 +843,9 @@ qboolean VR_XR_BeginFrame (void)
 		}
 	}
 
+	// needs the fresh view poses, so it has to follow xrLocateViews
+	XR_UpdateRoomscale ();
+
 	return xr_frame_state.shouldRender ? true : false;
 }
 
@@ -1099,6 +1115,11 @@ qboolean VR_XR_EyePose (float out_angles[3], float out_offset[3])
 	out_offset[0] = -pose->position.z * scale;
 	out_offset[1] = -pose->position.x * scale;
 	out_offset[2] = pose->position.y * scale;
+
+	// take back whatever room-scale walking has already been handed to the
+	// player as movement, or we would apply it twice
+	out_offset[0] -= xr_roomscale_consumed[0];
+	out_offset[1] -= xr_roomscale_consumed[1];
 
 	// floor-relative height -> Quake's centre-of-box origin (quakevr vr.cpp:3516)
 	out_offset[2] += vr_floor_offset.value;
@@ -1703,6 +1724,57 @@ cvar_t vr_turn_speed = {"vr_turn_speed", "120", CVAR_ARCHIVE}; // degrees/sec, s
 cvar_t vr_snap_turn = {"vr_snap_turn", "45", CVAR_ARCHIVE};	   // degrees per snap; 0 = smooth
 cvar_t vr_deadzone = {"vr_deadzone", "0.2", CVAR_ARCHIVE};
 
+// Room-scale: physically walking moves the player, not just the camera.
+cvar_t vr_roomscale = {"vr_roomscale", "1", CVAR_ARCHIVE};
+cvar_t vr_roomscale_mult = {"vr_roomscale_mult", "1", CVAR_ARCHIVE};
+
+/*
+===============
+XR_UpdateRoomscale
+
+Called once per frame after the views are located. Converts however far the
+player physically moved into a delta the movement command can carry.
+===============
+*/
+static void XR_UpdateRoomscale (void)
+{
+	vec3_t head;
+	float  scale = VR_METERS_TO_UNITS;
+
+	xr_roomscale_delta[0] = xr_roomscale_delta[1] = xr_roomscale_delta[2] = 0.0f;
+
+	if (!xr_views_valid)
+	{
+		xr_head_pos_valid = false;
+		return;
+	}
+
+	// midpoint of the two eyes is close enough to the head for this purpose
+	head[0] = -0.5f * (xr_views[0].pose.position.z + xr_views[1].pose.position.z) * scale;
+	head[1] = -0.5f * (xr_views[0].pose.position.x + xr_views[1].pose.position.x) * scale;
+	head[2] = 0.5f * (xr_views[0].pose.position.y + xr_views[1].pose.position.y) * scale;
+
+	if (!xr_head_pos_valid)
+	{
+		VectorCopy (head, xr_last_head_pos);
+		xr_head_pos_valid = true;
+		return;
+	}
+
+	if (vr_roomscale.value)
+	{
+		// horizontal only: crouching should not launch the player sideways
+		xr_roomscale_delta[0] = (head[0] - xr_last_head_pos[0]) * vr_roomscale_mult.value;
+		xr_roomscale_delta[1] = (head[1] - xr_last_head_pos[1]) * vr_roomscale_mult.value;
+		xr_roomscale_delta[2] = 0.0f;
+
+		xr_roomscale_consumed[0] += xr_roomscale_delta[0];
+		xr_roomscale_consumed[1] += xr_roomscale_delta[1];
+	}
+
+	VectorCopy (head, xr_last_head_pos);
+}
+
 /*
 ===============
 XR_ApplyDeadzone
@@ -1781,6 +1853,21 @@ void VR_XR_Move (usercmd_t *cmd)
 	{
 		cmd->forwardmove *= cl_movespeedkey.value;
 		cmd->sidemove *= cl_movespeedkey.value;
+	}
+
+	// Room-scale: physical walking, expressed as movement input. The delta is a
+	// distance, so divide by frametime to get the speed that covers it, and
+	// rotate world-space motion into the player's facing.
+	if (vr_roomscale.value && host_frametime > 0.0)
+	{
+		const float yaw = DEG2RAD (cl.viewangles[YAW]);
+		const float s = sinf (yaw), c = cosf (yaw);
+		const float inv_dt = (float)(1.0 / host_frametime);
+		const float wx = xr_roomscale_delta[0] * inv_dt;
+		const float wy = xr_roomscale_delta[1] * inv_dt;
+
+		cmd->forwardmove += wx * c + wy * s;
+		cmd->sidemove += -wx * s + wy * c;
 	}
 }
 
