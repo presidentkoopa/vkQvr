@@ -214,6 +214,14 @@ void VR_XR_ModAllModels (void);
 // frame is driven by finger curl. Called once per frame from V_CalcRefdef.
 void VR_XR_SetupBodyEntities (void);
 
+// Replaces the flat 2D ortho transform with one that hangs the canvas on a
+// panel in front of the player. Returns false when the flat one should be used.
+qboolean VR_XR_HudMatrix (float out[16], float canvas_w, float canvas_h);
+
+extern cvar_t vr_menu_scale;
+extern cvar_t vr_menu_distance;
+extern cvar_t vr_hud_enabled;
+
 extern cvar_t vr_vrtorso_enabled;
 extern cvar_t vr_vrtorso_x_offset;
 extern cvar_t vr_vrtorso_y_offset;

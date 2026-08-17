@@ -1116,6 +1116,17 @@ static void GL_OrthoMatrix (cb_context_t *cbx, float left, float right, float bo
 	float tz = -(f + n) / (f - n);
 
 	float matrix[16];
+
+	// VR: hang the 2D canvas on a panel in front of the player instead of
+	// painting it flat across both eyes, where it has no depth and fights the
+	// stereo image. Same idea as quakevr (vr.cpp:3588-3700), expressed as a
+	// matrix because Vulkan has no fixed-function stack to push.
+	if (VR_XR_HudMatrix (matrix, right - left, bottom - top))
+	{
+		R_PushConstants (cbx, VK_SHADER_STAGE_ALL_GRAPHICS, 0, 16 * sizeof (float), matrix);
+		return;
+	}
+
 	memset (&matrix, 0, sizeof (matrix));
 
 	// First column

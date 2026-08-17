@@ -226,6 +226,10 @@ void VR_XR_Init (void)
 	Cvar_RegisterVariable (&vr_gun_wall_collision);
 	Cvar_RegisterVariable (&vr_gun_debug);
 	Cvar_RegisterVariable (&vr_gun_nooffset);
+	Cvar_RegisterVariable (&vr_hud_enabled);
+	Cvar_RegisterVariable (&vr_menu_scale);
+	Cvar_RegisterVariable (&vr_menu_distance);
+	Cvar_RegisterVariable (&vr_lefthanded);
 	Cvar_RegisterVariable (&vr_gunangle);
 	Cvar_RegisterVariable (&vr_gunyaw);
 	Cvar_RegisterVariable (&vr_gun_z_offset);
@@ -3827,6 +3831,101 @@ void VR_XR_SetupBodyEntities (void)
 	head_height = xr_head_pos_valid ? xr_last_head_pos[2] : 0.0f;
 	cl.vrtorso.origin[2] += (head_height / VR_METERS_TO_UNITS) * vr_vrtorso_head_z_mult.value;
 	cl.vrtorso.origin[2] += vr_vrtorso_z_offset.value;
+}
+
+/*
+================================================================================
+
+	VR HUD
+
+	A status bar painted flat across both eyes has no depth, so it fights the
+	stereo image and is uncomfortable to read. quakevr instead hangs the 2D
+	canvas on a panel floating in front of the player and renders the ordinary
+	HUD onto it (vr.cpp:3588-3700).
+
+	quakevr composes that with the fixed-function matrix stack. Vulkan has no
+	such stack -- vkQuake pushes the 2D ortho matrix as a push constant -- so
+	the same transform is built directly and substituted for the ortho matrix.
+
+================================================================================
+*/
+
+cvar_t vr_menu_scale = {"vr_menu_scale", "0.13", CVAR_ARCHIVE};
+cvar_t vr_menu_distance = {"vr_menu_distance", "76", CVAR_ARCHIVE};
+cvar_t vr_hud_enabled = {"vr_hud_enabled", "1", CVAR_ARCHIVE};
+
+static vec3_t xr_hud_last_pos;
+static qboolean xr_hud_pos_valid = false;
+
+/*
+===============
+VR_XR_HudMatrix
+
+Returns false when the flat ortho matrix should be used instead.
+
+Canvas coordinates are 320x200 with Y running down. The panel is placed a fixed
+distance along the view direction, turned to face the player, and centred; the
+position is smoothed so the HUD does not jitter with every head movement.
+(quakevr vr.cpp:3646-3680)
+===============
+*/
+qboolean VR_XR_HudMatrix (float out[16], float canvas_w, float canvas_h)
+{
+	vec3_t	fwd, right, up, angles, target;
+	float	m[16], tmp[16];
+	float	scale;
+
+	if (!vr_hud_enabled.value || !VR_XR_SessionRunning ())
+		return false;
+	if (cls.state != ca_connected || !cl.worldmodel)
+		return false;
+
+	scale = vr_menu_scale.value;
+
+	// hang it off the view direction, upright
+	VectorCopy (r_refdef.viewangles, angles);
+	AngleVectors (angles, fwd, right, up);
+	VectorMA (r_refdef.vieworg, vr_menu_distance.value, fwd, target);
+
+	// Smooth toward the target rather than snapping. quakevr mixes at 0.9
+	// (vr.cpp:3663); without it the panel shakes with every small head motion.
+	if (!xr_hud_pos_valid)
+	{
+		VectorCopy (target, xr_hud_last_pos);
+		xr_hud_pos_valid = true;
+	}
+	else
+	{
+		xr_hud_last_pos[0] += (target[0] - xr_hud_last_pos[0]) * 0.9f;
+		xr_hud_last_pos[1] += (target[1] - xr_hud_last_pos[1]) * 0.9f;
+		xr_hud_last_pos[2] += (target[2] - xr_hud_last_pos[2]) * 0.9f;
+	}
+	VectorCopy (xr_hud_last_pos, target);
+
+	// quakevr's order, expressed as matrices instead of GL calls:
+	//   T(target) Rz(yaw-90) Rx(-(pitch+90)) T(-w*scale/2, -h*scale/2, 0) S(scale)
+	IdentityMatrix (m);
+
+	TranslationMatrix (tmp, target[0], target[1], target[2]);
+	MatrixMultiply (m, tmp);
+
+	RotationMatrix (tmp, DEG2RAD (angles[YAW] - 90.0f), 0.0f, 0.0f, 1.0f);
+	MatrixMultiply (m, tmp);
+
+	RotationMatrix (tmp, DEG2RAD (-(angles[PITCH] + 90.0f)), 1.0f, 0.0f, 0.0f);
+	MatrixMultiply (m, tmp);
+
+	TranslationMatrix (tmp, -(canvas_w * scale * 0.5f), -(canvas_h * scale * 0.5f), 0.0f);
+	MatrixMultiply (m, tmp);
+
+	ScaleMatrix (tmp, scale, scale, scale);
+	MatrixMultiply (m, tmp);
+
+	// finally through the eye's view-projection so it lands in the right place
+	// for each eye and gets real stereo depth
+	memcpy (out, vulkan_globals.view_projection_matrix, 16 * sizeof (float));
+	MatrixMultiply (out, m);
+	return true;
 }
 
 /*
