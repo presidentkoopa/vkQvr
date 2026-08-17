@@ -2140,6 +2140,24 @@ void VR_XR_SyncInput (void)
 
 		XR_UpdateFingers ((int)hand);
 	}
+
+	// The per-weapon offsets are quakevr's, and they are expressed relative to
+	// the OpenVR controller pose plus vr_gunangle (32 degrees). OpenXR's grip
+	// pose is the same device-native frame, so grip + 32 should reproduce it --
+	// but runtimes vary in how they define grip, and the difference between
+	// grip and aim IS the runtime stating its convention. Report it once so the
+	// correction can be a measured constant rather than a guess.
+	{
+		static qboolean reported = false;
+		const int		mh = VR_XR_MainHand ();
+		if (!reported && vr_xr_hand[mh].tracked)
+		{
+			reported = true;
+			Con_Printf (
+				"OpenXR: grip->aim delta  pitch %.1f  yaw %.1f  roll %.1f\n", vr_xr_hand[mh].aim_angles[PITCH] - vr_xr_hand[mh].angles[PITCH],
+				vr_xr_hand[mh].aim_angles[YAW] - vr_xr_hand[mh].angles[YAW], vr_xr_hand[mh].aim_angles[ROLL] - vr_xr_hand[mh].angles[ROLL]);
+		}
+	}
 }
 
 /*
@@ -3675,6 +3693,88 @@ static void XR_SetupHandEntity (int hand, const vec3_t player_origin)
 
 /*
 ===============
+XR_SetupOffHandWeapon
+
+Dual wielding. quakevr ships the off-hand weapon's model and frame to the
+client through extra stat bytes on its own protocol (SU_VR_WEAPON2 and friends,
+protocol.hpp:262-264). Rather than extend the protocol here, the values are
+read straight off the player edict, which works because the QC that sets them
+is running in the same process on a listen server.
+(quakevr V_SetupOffHandWpnViewEnt, view.cpp:1167-1220)
+===============
+*/
+static void XR_SetupOffHandWeapon (const vec3_t player_origin)
+{
+	const struct pr_extfields_s *f;
+	entity_t					*view = &cl.offhand_viewent;
+	const vr_hand_t				*h;
+	edict_t						*player;
+	eval_t						*model_field;
+	const char					*model_name;
+	vec3_t						 world, angles, vel;
+	qcvm_t						*old_vm = NULL;
+	qboolean					 switched = false;
+
+	view->model = NULL;
+
+	if (!sv.active || cls.signon != SIGNONS)
+		return;
+
+	if (qcvm != &sv.qcvm)
+	{
+		old_vm = qcvm;
+		PR_SwitchQCVM (NULL);
+		PR_SwitchQCVM (&sv.qcvm);
+		switched = true;
+	}
+
+	f = &qcvm->extfields;
+	player = (cl.viewentity > 0 && cl.viewentity < qcvm->num_edicts) ? EDICT_NUM (cl.viewentity) : NULL;
+
+	if (player && !player->free && f->weaponmodel2 >= 0)
+	{
+		model_field = GetEdictFieldValue (player, f->weaponmodel2);
+		if (model_field && model_field->string)
+		{
+			model_name = PR_GetString (model_field->string);
+			if (model_name && *model_name)
+			{
+				view->model = Mod_ForName (model_name, false);
+				if (f->weaponframe2 >= 0)
+				{
+					eval_t *fr = GetEdictFieldValue (player, f->weaponframe2);
+					view->frame = fr ? (int)fr->_float : 0;
+				}
+			}
+		}
+	}
+
+	if (switched)
+	{
+		PR_SwitchQCVM (NULL);
+		PR_SwitchQCVM (old_vm);
+	}
+
+	if (!view->model)
+		return;
+
+	h = &vr_xr_hand[VR_XR_OffHand ()];
+	if (!h->tracked)
+	{
+		view->model = NULL;
+		return;
+	}
+
+	XR_HandToWorld (h, player_origin, world, angles, vel);
+	VectorCopy (world, view->origin);
+	VectorCopy (angles, view->angles);
+	view->angles[PITCH] = -view->angles[PITCH];
+	view->colormap = vid.colormap;
+	view->alpha = ENTALPHA_DEFAULT;
+}
+
+/*
+===============
 VR_XR_SetupBodyEntities
 ===============
 */
@@ -3694,6 +3794,8 @@ void VR_XR_SetupBodyEntities (void)
 
 	for (hand = 0; hand < VR_HANDS; hand++)
 		XR_SetupHandEntity (hand, player->origin);
+
+	XR_SetupOffHandWeapon (player->origin);
 
 	// --- torso (quakevr V_SetupVRTorsoViewEnt, view.cpp:1222-1249) ---
 	if (!vr_vrtorso_enabled.value)

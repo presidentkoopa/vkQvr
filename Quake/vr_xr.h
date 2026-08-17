@@ -264,6 +264,12 @@ extern cvar_t vr_teleport_enabled;
 extern cvar_t vr_teleport_range;
 extern cvar_t vr_gun_wall_collision;
 
+// Which physical controller is which. Everything that cares about handedness
+// goes through these, so no two systems can disagree.
+int VR_XR_MainHand (void);
+int VR_XR_OffHand (void);
+extern cvar_t vr_lefthanded;
+
 // Holster hotspot ids. Values are quakevr's (quakedef_macros.hpp:286-295) --
 // its QC compares against these numbers directly, so they are a contract.
 #define QVR_HS_NONE					 0
