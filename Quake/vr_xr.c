@@ -46,6 +46,7 @@ void		VR_XR_ModAllModels (void);
 static int	XR_ComputeHotSpot (const vec3_t hand_world, const vec3_t player_origin);
 static void VR_XR_Calibrate_f (void);
 static void VR_XR_Recenter_f (void);
+static void VR_XR_ScaleDump_f (void);
 
 // Finger tracking cvars, declared here because VR_XR_Init registers them well
 // before the finger-tracking section defines them. Defaults are quakevr's
@@ -272,6 +273,7 @@ void VR_XR_Init (void)
 
 	Cmd_AddCommand ("vr_calibrate", VR_XR_Calibrate_f);
 	Cmd_AddCommand ("vr_recenter", VR_XR_Recenter_f);
+	Cmd_AddCommand ("vr_scaledump", VR_XR_ScaleDump_f);
 
 	if (COM_CheckParm ("-novr") || !COM_CheckParm ("-vr"))
 		return; // flat mode; say nothing
@@ -2300,6 +2302,20 @@ typedef struct
 	float		scale;
 } vr_wpn_offset_t;
 
+/*
+===============
+VR_XR_GetScaleCorrect
+
+quakevr's model numbers were all authored when the default world scale was
+0.75, so every one of them is rescaled to whatever is in use now. Applies to
+the body models as much as the weapons. (quakevr VR_GetScaleCorrect)
+===============
+*/
+static float VR_XR_GetScaleCorrect (void)
+{
+	return (vr_world_scale.value / 0.75f) * vr_gunmodelscale.value;
+}
+
 // vanilla Quake, Scourge of Armagon, Dissolution of Eternity
 static const vr_wpn_offset_t vr_wpn_offsets_id1[] = {
 	{"progs/v_axe.mdl", -4.0f, 24.0f, 37.0f, 0.33f},
@@ -2390,9 +2406,7 @@ void VR_XR_ApplyWeaponModelMod (aliashdr_t *hdr, const char *model_name)
 	if (!hdr)
 		return;
 
-	// quakevr's scale correction: its offsets were authored against a 0.75
-	// world scale, so they have to be rescaled to whatever is in use now
-	correct = (vr_world_scale.value / 0.75f) * vr_gunmodelscale.value;
+	correct = VR_XR_GetScaleCorrect ();
 
 	w = VR_FindWpnOffset (model_name);
 
@@ -2473,10 +2487,17 @@ static void XR_ModModel (const char *name, const vec3_t scale, const vec3_t offs
 	if (!hdr)
 		return;
 
+	// Same scale correction the weapons get. quakevr runs the torso and the leg
+	// holsters through the very same VR_ApplyModelMod (vr.cpp:614-622), so they
+	// pick up VR_GetScaleCorrect too -- it is not a weapon-only factor. Leaving
+	// it out drew both at 1/1.333, three quarters of their proper size, with
+	// the offsets in unscaled units on top of that.
+	const float correct = VR_XR_GetScaleCorrect ();
+
 	for (i = 0; i < 3; i++)
 	{
-		hdr->scale[i] = hdr->original_scale[i] * scale[i];
-		hdr->scale_origin[i] = hdr->original_scale_origin[i] + offset[i];
+		hdr->scale[i] = hdr->original_scale[i] * scale[i] * correct;
+		hdr->scale_origin[i] = (hdr->original_scale_origin[i] + offset[i]) * correct;
 	}
 }
 
@@ -2516,6 +2537,48 @@ void VR_XR_ModAllModels (void)
 	}
 
 	VR_XR_ModAllWeapons ();
+}
+
+/*
+===============
+VR_XR_ScaleDump_f
+
+Prints what every VR model is actually being drawn at, so a complaint about
+scale can be answered with numbers instead of another guess. "ratio" is the
+factor against the model's own authored size: 1.0 is untouched.
+===============
+*/
+static void VR_XR_ScaleDump_f (void)
+{
+	static const char *names[] = {
+		"progs/hand_base.mdl", "progs/hand.mdl", "progs/finger_thumb.mdl", "progs/finger_index.mdl", "progs/finger_middle.mdl",
+		"progs/finger_ring.mdl", "progs/finger_pinky.mdl", "progs/vrtorso.mdl", "progs/legholster.mdl", "progs/v_shot.mdl",
+		"progs/v_shot2.mdl", "progs/v_axe.mdl", "progs/v_nail.mdl", "progs/v_rock2.mdl", "progs/v_light.mdl"};
+	size_t i;
+
+	Con_Printf ("world_scale %.3f  gunmodelscale %.3f  ->  scale_correct %.4f\n", vr_world_scale.value, vr_gunmodelscale.value,
+				VR_XR_GetScaleCorrect ());
+	Con_Printf ("wpn_offsets %s\n", vr_wpn_offsets.value ? "ON" : "off (position only; scale always applies)");
+
+	for (i = 0; i < countof (names); i++)
+	{
+		qmodel_t   *model = Mod_ForName (names[i], false);
+		aliashdr_t *hdr;
+		float		ratio;
+
+		if (!model || model->type != mod_alias)
+		{
+			Con_Printf ("  %-24s MISSING\n", names[i]);
+			continue;
+		}
+
+		hdr = (aliashdr_t *)Mod_Extradata (model);
+		if (!hdr)
+			continue;
+
+		ratio = (hdr->original_scale[0] != 0.0f) ? hdr->scale[0] / hdr->original_scale[0] : 0.0f;
+		Con_Printf ("  %-24s ratio %6.3f  ofs %7.2f %7.2f %7.2f\n", names[i], ratio, hdr->scale_origin[0], hdr->scale_origin[1], hdr->scale_origin[2]);
+	}
 }
 
 void VR_XR_ModAllWeapons (void)
