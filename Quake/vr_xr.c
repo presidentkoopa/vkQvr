@@ -53,6 +53,17 @@ cvar_t vr_finger_auto_close_thumb = {"vr_finger_auto_close_thumb", "1", CVAR_ARC
 cvar_t vr_finger_blending = {"vr_finger_blending", "1", CVAR_ARCHIVE};
 cvar_t vr_finger_blending_speed = {"vr_finger_blending_speed", "50", CVAR_ARCHIVE};
 
+// Teleport locomotion (quakevr vr_cvars.cpp:86-87). State lives here rather
+// than beside the implementation because the edict-field writer reads it.
+cvar_t vr_teleport_enabled = {"vr_teleport_enabled", "1", CVAR_ARCHIVE};
+cvar_t vr_teleport_range = {"vr_teleport_range", "400", CVAR_ARCHIVE};
+
+static qboolean xr_teleporting = false;
+static qboolean xr_was_teleporting = false;
+static qboolean xr_teleport_valid = false;
+static vec3_t	xr_teleport_impact;
+static qboolean xr_send_teleport = false;
+
 // Room-scale bookkeeping. Head position in play space (Quake units) last frame,
 // the delta to hand to the movement command, and the running total already
 // turned into player movement -- the view subtracts that, otherwise a step
@@ -198,6 +209,9 @@ void VR_XR_Init (void)
 	Cvar_RegisterVariable (&vr_finger_auto_close_thumb);
 	Cvar_RegisterVariable (&vr_finger_blending);
 	Cvar_RegisterVariable (&vr_finger_blending_speed);
+	Cvar_RegisterVariable (&vr_teleport_enabled);
+	Cvar_RegisterVariable (&vr_teleport_range);
+	Cvar_RegisterVariable (&vr_gun_wall_collision);
 
 	// vkQuake ships gamma 0.9 / contrast 1.4, a brightened look tuned for a
 	// monitor. quakevr runs both at 1 (gl_vidsdl.cpp:150-152); applied to a
@@ -2480,6 +2494,11 @@ qboolean VR_XR_WeaponPose (const vec3_t player_origin, vec3_t out_origin, vec3_t
 	// the aim ray is what the weapon should point along, not the grip
 	VectorCopy (h->aim_angles, out_angles);
 	out_angles[YAW] += cl.viewangles[YAW];
+
+	// Keep the barrel out of walls before the pitch is flipped for drawing,
+	// since the collision sweep needs a real direction.
+	VR_XR_ResolveGunCollision (out_origin, out_angles, 24.0f);
+
 	// viewmodels are drawn with inverted pitch, matching CalcGunAngle
 	out_angles[PITCH] = -out_angles[PITCH];
 	return true;
@@ -3028,6 +3047,14 @@ void VR_XR_WriteEdictFields (edict_t *ed)
 	XR_SetVector (ed, f->headvel, head_v);
 	XR_SetFloat (ed, f->vryaw, cl.viewangles[YAW]);
 
+	// Teleport destination, consumed once. quakevr latches it the same way
+	// (vr.cpp:4449-4452) so the QC performs the move on exactly one frame.
+	if (xr_send_teleport)
+	{
+		xr_send_teleport = false;
+		XR_SetVector (ed, f->teleport_target, xr_teleport_impact);
+	}
+
 	// room-scale movement, as a velocity, exactly as quakevr sends it
 	// (vr.cpp:4615-4617)
 	if (host_frametime > 0.0)
@@ -3043,6 +3070,8 @@ void VR_XR_WriteEdictFields (edict_t *ed)
 	// vrbits0: quakevr's per-frame VR state bitfield (vr.cpp:4477-4499)
 	{
 		float bits = 0.0f;
+		if (xr_teleporting)
+			bits += (float)QVR_VRBITS0_TELEPORTING;
 		if (vr_xr_hand[off_hand].grip > 0.5f)
 			bits += (float)QVR_VRBITS0_OFFHAND_GRABBING;
 		if (vr_xr_hand[main_hand].grip > 0.5f)
@@ -3056,6 +3085,183 @@ void VR_XR_WriteEdictFields (edict_t *ed)
 	}
 
 	XR_SetFloat (ed, f->ishuman, 1.0f);
+}
+
+/*
+================================================================================
+
+	TELEPORT LOCOMOTION
+
+	Point with the off hand, hold to aim, release to go. quakevr traces a box
+	from the player toward the hand's forward ray and only accepts the
+	destination if the surface underfoot is close enough to level -- so you can
+	teleport onto slopes and ledges, but not onto walls or ceilings.
+
+	Ported from quakevr vr.cpp:2582-2631.
+
+================================================================================
+*/
+
+/*
+===============
+VR_XR_UpdateTeleport
+===============
+*/
+void VR_XR_UpdateTeleport (void)
+{
+	const int off_hand = vr_aim_hand.value ? VR_HAND_LEFT : VR_HAND_RIGHT;
+	vec3_t	  mins, maxs, fwd, right, up, angles, start, target;
+	trace_t	  trace;
+	edict_t	 *player;
+
+	if (!vr_teleport_enabled.value || !xr_input_ready || !VR_XR_SessionRunning ())
+		return;
+	if (!sv.active || cls.state != ca_connected || cls.signon != SIGNONS)
+		return;
+	if (cl.viewentity <= 0 || cl.viewentity >= cl.max_edicts)
+		return;
+
+	player = EDICT_NUM (cl.viewentity);
+	if (!player || player->free)
+		return;
+
+	// held: aim. quakevr uses the off hand so the weapon hand stays free.
+	xr_teleporting = (vr_xr_hand[off_hand].btn_stick || vr_xr_hand[off_hand].trigger > 0.7f) ? true : false;
+
+	if (xr_teleporting)
+	{
+		// the box quakevr sweeps: narrow, and a bit shorter than the player
+		mins[0] = mins[1] = -6.0f;
+		mins[2] = -12.0f;
+		maxs[0] = maxs[1] = 6.0f;
+		maxs[2] = 12.0f;
+
+		VectorCopy (vr_xr_hand[off_hand].angles, angles);
+		angles[YAW] += cl.viewangles[YAW];
+		AngleVectors (angles, fwd, right, up);
+
+		// start at the player, aim along the hand
+		{
+			vec3_t hand_world, hand_ang, hand_vel;
+			XR_HandToWorld (&vr_xr_hand[off_hand], player->v.origin, hand_world, hand_ang, hand_vel);
+			VectorCopy (hand_world, start);
+		}
+		VectorMA (start, vr_teleport_range.value, fwd, target);
+
+		trace = SV_Move (start, mins, maxs, target, MOVE_NORMAL, player);
+
+		// Slopes yes, walls and ceilings no: a floor points mostly straight up.
+		xr_teleport_valid = (trace.fraction < 1.0f && trace.plane.normal[2] >= 0.75f && trace.plane.normal[2] <= 1.0f) ? true : false;
+
+		VectorCopy (trace.endpos, xr_teleport_impact);
+		xr_teleport_impact[2] += 12.0f; // lift clear of the surface
+
+		// Mark the destination. quakevr spawns a particle effect here
+		// (vr.cpp:2621); a dlight reads just as clearly and costs nothing,
+		// and the colour tells you whether the spot is actually usable.
+		if (cls.state == ca_connected && cl.worldmodel)
+		{
+			dlight_t *dl = CL_AllocDlight (-1);
+			if (dl)
+			{
+				VectorCopy (trace.endpos, dl->origin);
+				dl->origin[2] += 4.0f;
+				dl->radius = 48.0f;
+				dl->die = cl.time + 0.05f;
+				dl->decay = 0.0f;
+				if (xr_teleport_valid)
+				{
+					dl->color[0] = 0.2f;
+					dl->color[1] = 1.0f;
+					dl->color[2] = 0.3f;
+				}
+				else
+				{
+					dl->color[0] = 1.0f;
+					dl->color[1] = 0.2f;
+					dl->color[2] = 0.1f;
+				}
+			}
+		}
+	}
+	else if (xr_was_teleporting && xr_teleport_valid)
+	{
+		// released over somewhere valid: go
+		xr_send_teleport = true;
+		if (vr_haptics.value)
+			VR_XR_Haptic (off_hand, 0.08f, 140.0f, 0.7f);
+	}
+
+	xr_was_teleporting = xr_teleporting;
+}
+
+/*
+================================================================================
+
+	GUN WALL COLLISIONS
+
+	Without this the weapon happily pokes through walls, which both looks wrong
+	and lets the player shoot around corners from cover.
+
+	quakevr sweeps a small box from the hand to the muzzle and, on a hit, pulls
+	the hand back so the muzzle sits at the impact instead. The gun stays in
+	front of the wall and the player's real hand simply diverges from the
+	virtual one, which is the standard resolution and reads far better than
+	letting the barrel clip through. (quakevr vr.cpp:1765-1807)
+
+================================================================================
+*/
+
+cvar_t vr_gun_wall_collision = {"vr_gun_wall_collision", "1", CVAR_ARCHIVE};
+
+static qboolean xr_gun_colliding = false;
+
+/*
+===============
+VR_XR_ResolveGunCollision
+
+hand_pos is adjusted in place. muzzle_len is how far ahead of the hand the
+barrel ends, in Quake units.
+===============
+*/
+void VR_XR_ResolveGunCollision (vec3_t hand_pos, const vec3_t hand_angles, float muzzle_len)
+{
+	vec3_t	 mins, maxs, fwd, right, up, muzzle, local, ang;
+	trace_t	 trace;
+	edict_t *player;
+	int		 i;
+
+	xr_gun_colliding = false;
+
+	if (!vr_gun_wall_collision.value || !VR_XR_SessionRunning ())
+		return;
+	if (!sv.active || cls.signon != SIGNONS)
+		return;
+	if (cl.viewentity <= 0 || cl.viewentity >= cl.max_edicts)
+		return;
+
+	player = EDICT_NUM (cl.viewentity);
+	if (!player || player->free)
+		return;
+
+	mins[0] = mins[1] = mins[2] = -1.0f;
+	maxs[0] = maxs[1] = maxs[2] = 1.0f;
+
+	// AngleVectors takes a non-const vec3_t
+	VectorCopy (hand_angles, ang);
+	AngleVectors (ang, fwd, right, up);
+	VectorScale (fwd, muzzle_len, local);
+	VectorAdd (hand_pos, local, muzzle);
+
+	trace = SV_Move (hand_pos, mins, maxs, muzzle, MOVE_NORMAL, player);
+
+	if (trace.fraction < 1.0f)
+	{
+		xr_gun_colliding = true;
+		// pull the hand back by however far the muzzle was blocked
+		for (i = 0; i < 3; i++)
+			hand_pos[i] = trace.endpos[i] - local[i];
+	}
 }
 
 /*

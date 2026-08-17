@@ -252,6 +252,18 @@ void VR_XR_WriteEdictFields (struct edict_s *ed);
 // (quakevr world.cpp:448-503)
 void VR_XR_HandTouch (struct edict_s *ent, struct edict_s *target);
 
+// Teleport locomotion: point with the off hand, hold to aim, release to go.
+// Runs once per frame from the host loop.
+void VR_XR_UpdateTeleport (void);
+
+extern cvar_t vr_teleport_enabled;
+extern cvar_t vr_teleport_range;
+extern cvar_t vr_gun_wall_collision;
+
+// Pulls the hand back so the muzzle stops at a wall instead of poking through
+// it -- which otherwise lets the player shoot around corners from cover.
+void VR_XR_ResolveGunCollision (vec3_t hand_pos, const vec3_t hand_angles, float muzzle_len);
+
 // adds bonus reach for entities flagged easy to grab (quakevr serverdefines.hpp:54)
 #define FL_EASYHANDTOUCH (1 << 13)
 

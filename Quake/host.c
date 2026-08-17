@@ -1129,6 +1129,7 @@ static void _Host_Frame (double time)
 
 	// laser dot goes in after the world state is current, before rendering
 	VR_XR_UpdateLaser ();
+	VR_XR_UpdateTeleport ();
 
 	// update video
 	if (host_speeds.value)
