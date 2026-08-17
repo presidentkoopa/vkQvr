@@ -3113,17 +3113,44 @@ void VR_XR_UpdateTeleport (void)
 	vec3_t	  mins, maxs, fwd, right, up, angles, start, target;
 	trace_t	  trace;
 	edict_t	 *player;
+	qboolean  switched = false;
+	qcvm_t   *old_vm = NULL;
 
 	if (!vr_teleport_enabled.value || !xr_input_ready || !VR_XR_SessionRunning ())
 		return;
 	if (!sv.active || cls.state != ca_connected || cls.signon != SIGNONS)
 		return;
-	if (cl.viewentity <= 0 || cl.viewentity >= cl.max_edicts)
+
+	// same reason as VR_XR_ResolveGunCollision: EDICT_NUM and SV_Move act on
+	// the current qcvm, and the host loop is not running the server's
+	if (qcvm != &sv.qcvm)
+	{
+		old_vm = qcvm;
+		PR_SwitchQCVM (NULL);
+		PR_SwitchQCVM (&sv.qcvm);
+		switched = true;
+	}
+
+	if (cl.viewentity <= 0 || cl.viewentity >= qcvm->num_edicts)
+	{
+		if (switched)
+		{
+			PR_SwitchQCVM (NULL);
+			PR_SwitchQCVM (old_vm);
+		}
 		return;
+	}
 
 	player = EDICT_NUM (cl.viewentity);
 	if (!player || player->free)
+	{
+		if (switched)
+		{
+			PR_SwitchQCVM (NULL);
+			PR_SwitchQCVM (old_vm);
+		}
 		return;
+	}
 
 	// held: aim. quakevr uses the off hand so the weapon hand stays free.
 	xr_teleporting = (vr_xr_hand[off_hand].btn_stick || vr_xr_hand[off_hand].trigger > 0.7f) ? true : false;
@@ -3193,6 +3220,12 @@ void VR_XR_UpdateTeleport (void)
 	}
 
 	xr_was_teleporting = xr_teleporting;
+
+	if (switched)
+	{
+		PR_SwitchQCVM (NULL);
+		PR_SwitchQCVM (old_vm);
+	}
 }
 
 /*
@@ -3230,6 +3263,8 @@ void VR_XR_ResolveGunCollision (vec3_t hand_pos, const vec3_t hand_angles, float
 	trace_t	 trace;
 	edict_t *player;
 	int		 i;
+	qboolean switched = false;
+	qcvm_t  *old_vm = NULL;
 
 	xr_gun_colliding = false;
 
@@ -3237,12 +3272,38 @@ void VR_XR_ResolveGunCollision (vec3_t hand_pos, const vec3_t hand_angles, float
 		return;
 	if (!sv.active || cls.signon != SIGNONS)
 		return;
-	if (cl.viewentity <= 0 || cl.viewentity >= cl.max_edicts)
+
+	// EDICT_NUM and SV_Move both work against whatever qcvm is current, and
+	// this is called from the client's view code where it is not the server's.
+	// Reading the wrong VM's edict array hands back a garbage pointer.
+	if (qcvm != &sv.qcvm)
+	{
+		old_vm = qcvm;
+		PR_SwitchQCVM (NULL);
+		PR_SwitchQCVM (&sv.qcvm);
+		switched = true;
+	}
+
+	if (cl.viewentity <= 0 || cl.viewentity >= qcvm->num_edicts)
+	{
+		if (switched)
+		{
+			PR_SwitchQCVM (NULL);
+			PR_SwitchQCVM (old_vm);
+		}
 		return;
+	}
 
 	player = EDICT_NUM (cl.viewentity);
 	if (!player || player->free)
+	{
+		if (switched)
+		{
+			PR_SwitchQCVM (NULL);
+			PR_SwitchQCVM (old_vm);
+		}
 		return;
+	}
 
 	mins[0] = mins[1] = mins[2] = -1.0f;
 	maxs[0] = maxs[1] = maxs[2] = 1.0f;
@@ -3261,6 +3322,12 @@ void VR_XR_ResolveGunCollision (vec3_t hand_pos, const vec3_t hand_angles, float
 		// pull the hand back by however far the muzzle was blocked
 		for (i = 0; i < 3; i++)
 			hand_pos[i] = trace.endpos[i] - local[i];
+	}
+
+	if (switched)
+	{
+		PR_SwitchQCVM (NULL);
+		PR_SwitchQCVM (old_vm);
 	}
 }
 
