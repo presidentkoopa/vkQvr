@@ -197,4 +197,22 @@ struct aliashdr_s;
 void VR_XR_ApplyWeaponModelMod (struct aliashdr_s *hdr, const char *model_name);
 void VR_XR_ModAllWeapons (void);
 
+// vrbits0 flags, values taken from quakevr (quakedef_macros.hpp:299-310) so a
+// progs.dat built against quakevr's QC reads the same bits.
+#define QVR_VRBITS0_TELEPORTING			   (1u << 0)
+#define QVR_VRBITS0_OFFHAND_GRABBING	   (1u << 1)
+#define QVR_VRBITS0_OFFHAND_PREVGRABBING   (1u << 2)
+#define QVR_VRBITS0_MAINHAND_GRABBING	   (1u << 3)
+#define QVR_VRBITS0_MAINHAND_PREVGRABBING  (1u << 4)
+#define QVR_VRBITS0_2H_AIMING			   (1u << 5)
+#define QVR_VRBITS0_OFFHAND_RELOADING	   (1u << 6)
+#define QVR_VRBITS0_OFFHAND_PREVRELOADING  (1u << 7)
+#define QVR_VRBITS0_MAINHAND_RELOADING	   (1u << 8)
+#define QVR_VRBITS0_MAINHAND_PREVRELOADING (1u << 9)
+
+// Publishes hand state onto a player edict as QuakeC-readable fields, so game
+// logic (holsters, throwing, force-grab) has something to work with.
+struct edict_s;
+void VR_XR_WriteEdictFields (struct edict_s *ed);
+
 #endif /* _VR_XR_H */

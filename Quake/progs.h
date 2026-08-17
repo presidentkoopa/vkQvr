@@ -331,10 +331,91 @@ struct pr_extfields_s
 	QCEXTFIELD (SendFlags, ".float")								 /*float. :( */ \
 																	 // end of list
 
+// VR fields, taken name-for-name from quakevr's QC/vr_sys_fields.qc so that a
+// progs.dat built against that file works here unchanged.
+//
+// quakevr welds these into entvars_t, which forces PROGHEADER_CRC to 52440 and
+// makes every third-party progs.dat unloadable. Declaring them here instead
+// means they resolve by name, default to -1 when a mod does not define them,
+// and the CRC stays at the stock 5927 -- so vanilla, Arcane Dimensions and a VR
+// progs.dat all load in the same engine.
+// button3 is deliberately absent: vkQuake already declares it above.
+#define QCEXTFIELDS_VR                                                          \
+	QCEXTFIELD (model_scale, ".vector")									       \
+	QCEXTFIELD (model_scale_origin, ".vector")							       \
+	QCEXTFIELD (model_offset, ".vector")								       \
+	QCEXTFIELD (vr_itemId, ".float")									       \
+	QCEXTFIELD (handtouch, ".void()")	 /*touched by a VR hand*/		       \
+	QCEXTFIELD (vr_wpntouch, ".void()")	 /*touched by a VR weapon*/		       \
+	QCEXTFIELD (think2, ".void()")		 /*off-hand think*/				       \
+	QCEXTFIELD (nextthink2, ".float")									       \
+	QCEXTFIELD (weaponflags, ".float")									       \
+	QCEXTFIELD (weapon2, ".float")		 /*off-hand weapon id*/			       \
+	QCEXTFIELD (weaponmodel2, ".string")								       \
+	QCEXTFIELD (weaponframe2, ".float")									       \
+	QCEXTFIELD (weaponflags2, ".float")									       \
+	QCEXTFIELD (weaponclip, ".float")									       \
+	QCEXTFIELD (weaponclip2, ".float")									       \
+	QCEXTFIELD (weaponclipsize, ".float")								       \
+	QCEXTFIELD (weaponclipsize2, ".float")								       \
+	QCEXTFIELD (holsterweapon0, ".float")								       \
+	QCEXTFIELD (holsterweapon1, ".float")								       \
+	QCEXTFIELD (holsterweapon2, ".float")								       \
+	QCEXTFIELD (holsterweapon3, ".float")								       \
+	QCEXTFIELD (holsterweapon4, ".float")								       \
+	QCEXTFIELD (holsterweapon5, ".float")								       \
+	QCEXTFIELD (holsterweaponmodel0, ".string")							       \
+	QCEXTFIELD (holsterweaponmodel1, ".string")							       \
+	QCEXTFIELD (holsterweaponmodel2, ".string")							       \
+	QCEXTFIELD (holsterweaponmodel3, ".string")							       \
+	QCEXTFIELD (holsterweaponmodel4, ".string")							       \
+	QCEXTFIELD (holsterweaponmodel5, ".string")							       \
+	QCEXTFIELD (holsterweaponflags0, ".float")							       \
+	QCEXTFIELD (holsterweaponflags1, ".float")							       \
+	QCEXTFIELD (holsterweaponflags2, ".float")							       \
+	QCEXTFIELD (holsterweaponflags3, ".float")							       \
+	QCEXTFIELD (holsterweaponflags4, ".float")							       \
+	QCEXTFIELD (holsterweaponflags5, ".float")							       \
+	QCEXTFIELD (holsterweaponclip0, ".float")							       \
+	QCEXTFIELD (holsterweaponclip1, ".float")							       \
+	QCEXTFIELD (holsterweaponclip2, ".float")							       \
+	QCEXTFIELD (holsterweaponclip3, ".float")							       \
+	QCEXTFIELD (holsterweaponclip4, ".float")							       \
+	QCEXTFIELD (holsterweaponclip5, ".float")							       \
+	QCEXTFIELD (offhand_hotspot, ".float")								       \
+	QCEXTFIELD (mainhand_hotspot, ".float")								       \
+	QCEXTFIELD (currentammo2, ".float")									       \
+	QCEXTFIELD (ammocounter2, ".float")									       \
+	QCEXTFIELD (vryaw, ".float")										       \
+	QCEXTFIELD (handpos, ".vector")										       \
+	QCEXTFIELD (handrot, ".vector")										       \
+	QCEXTFIELD (handvel, ".vector")										       \
+	QCEXTFIELD (handthrowvel, ".vector")								       \
+	QCEXTFIELD (handvelmag, ".float")									       \
+	QCEXTFIELD (handavel, ".vector")									       \
+	QCEXTFIELD (offhandpos, ".vector")									       \
+	QCEXTFIELD (offhandrot, ".vector")									       \
+	QCEXTFIELD (offhandvel, ".vector")									       \
+	QCEXTFIELD (offhandthrowvel, ".vector")								       \
+	QCEXTFIELD (offhandvelmag, ".float")								       \
+	QCEXTFIELD (offhandavel, ".vector")									       \
+	QCEXTFIELD (headvel, ".vector")										       \
+	QCEXTFIELD (muzzlepos, ".vector")									       \
+	QCEXTFIELD (offmuzzlepos, ".vector")								       \
+	QCEXTFIELD (vrbits0, ".float")										       \
+	QCEXTFIELD (teleport_target, ".vector")								       \
+	QCEXTFIELD (roomscalemove, ".vector")								       \
+	QCEXTFIELD (touchinghand, ".float")									       \
+	QCEXTFIELD (handtouch_hand, ".float")								       \
+	QCEXTFIELD (handtouch_ent, ".entity")								       \
+	QCEXTFIELD (ishuman, ".float")										       \
+																	 // end of list
+
 #define QCEXTFIELD(n, t) int n;
 	QCEXTFIELDS_ALL
 	QCEXTFIELDS_GAME
 	QCEXTFIELDS_SS
+	QCEXTFIELDS_VR
 #undef QCEXTFIELD
 };
 // clang-format on

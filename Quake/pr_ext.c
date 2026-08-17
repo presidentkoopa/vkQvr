@@ -6615,6 +6615,7 @@ void PR_DumpPlatform_f (void)
 	if (targs & (SS))
 	{
 		QCEXTFIELDS_SS
+		QCEXTFIELDS_VR
 	}
 #undef QCEXTFIELD
 

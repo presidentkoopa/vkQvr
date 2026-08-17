@@ -665,6 +665,12 @@ void SV_RunClients (void)
 			host_client->cmd.viewangles[2] = host_client->edict->v.v_angle[2];
 		}
 
+		// Publish VR hand state as QuakeC fields before the game thinks, so
+		// game logic sees this frame's poses. Local client only: a remote one
+		// needs the extended clc_move, which is a protocol change.
+		if (!host_client->netconnection)
+			VR_XR_WriteEdictFields (sv_player);
+
 		// always pause in single player if in console or menus
 		if (!sv.paused && (svs.maxclients > 1 || key_dest == key_game))
 			SV_ClientThink ();

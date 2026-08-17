@@ -2465,6 +2465,163 @@ static void VR_XR_Recenter_f (void)
 }
 
 /*
+================================================================================
+
+	QUAKEC FIELDS
+
+	Publishes hand state onto the player's edict so game logic can read it as
+	ordinary entity fields. Field names and semantics are quakevr's
+	(QC/vr_sys_fields.qc), and the values are written in the same places
+	quakevr writes them (sv_user.cpp:650-699).
+
+	The difference is how: quakevr welds the fields into entvars_t at fixed
+	offsets, which is what forces its progs.dat CRC and locks out every other
+	mod. Here they resolve by name through qcvm->extfields, so a progs.dat that
+	does not declare them simply reports -1 and the writes are skipped.
+
+	Only the local player is served for now. Carrying this to a remote client
+	needs the extended clc_move quakevr uses (protocol.hpp:554-589), which is a
+	protocol change and a separate piece of work.
+
+================================================================================
+*/
+
+/*
+===============
+XR_SetFloat / XR_SetVector
+===============
+*/
+static void XR_SetFloat (edict_t *ed, int ofs, float v)
+{
+	eval_t *val;
+	if (ofs < 0)
+		return; // progs.dat does not declare this field
+	val = GetEdictFieldValue (ed, ofs);
+	if (val)
+		val->_float = v;
+}
+
+static void XR_SetVector (edict_t *ed, int ofs, const vec3_t v)
+{
+	eval_t *val;
+	if (ofs < 0)
+		return;
+	val = GetEdictFieldValue (ed, ofs);
+	if (val)
+	{
+		val->vector[0] = v[0];
+		val->vector[1] = v[1];
+		val->vector[2] = v[2];
+	}
+}
+
+/*
+===============
+XR_HandToWorld
+
+Hand state is tracked in play space. Game logic wants it in the world, so it
+gets the same treatment the view and the gun get: drop the room-scale movement
+already consumed, rotate by the body yaw, offset from the player.
+===============
+*/
+static void XR_HandToWorld (const vr_hand_t *h, const vec3_t player_origin, vec3_t out_pos, vec3_t out_angles, vec3_t out_vel)
+{
+	const float yaw = DEG2RAD (cl.viewangles[YAW]);
+	const float s = sinf (yaw), c = cosf (yaw);
+	vec3_t		local;
+
+	local[0] = h->pos[0] - xr_roomscale_consumed[0];
+	local[1] = h->pos[1] - xr_roomscale_consumed[1];
+	local[2] = h->pos[2];
+
+	out_pos[0] = player_origin[0] + local[0] * c - local[1] * s;
+	out_pos[1] = player_origin[1] + local[0] * s + local[1] * c;
+	out_pos[2] = player_origin[2] + local[2];
+
+	VectorCopy (h->angles, out_angles);
+	out_angles[YAW] += cl.viewangles[YAW];
+
+	out_vel[0] = h->velocity[0] * c - h->velocity[1] * s;
+	out_vel[1] = h->velocity[0] * s + h->velocity[1] * c;
+	out_vel[2] = h->velocity[2];
+}
+
+/*
+===============
+VR_XR_WriteEdictFields
+===============
+*/
+void VR_XR_WriteEdictFields (edict_t *ed)
+{
+	const struct pr_extfields_s *f;
+	int							 main_hand, off_hand;
+	vec3_t						 pos, ang, vel, origin;
+	vec3_t						 head_v = {0.0f, 0.0f, 0.0f};
+
+	if (!ed || !xr_input_ready || !VR_XR_SessionRunning ())
+		return;
+	if (!qcvm)
+		return;
+
+	f = &qcvm->extfields;
+	VectorCopy (ed->v.origin, origin);
+
+	main_hand = vr_aim_hand.value ? VR_HAND_RIGHT : VR_HAND_LEFT;
+	off_hand = main_hand ^ 1;
+
+	// main hand
+	XR_HandToWorld (&vr_xr_hand[main_hand], origin, pos, ang, vel);
+	XR_SetVector (ed, f->handpos, pos);
+	XR_SetVector (ed, f->handrot, ang);
+	XR_SetVector (ed, f->handvel, vel);
+	XR_SetVector (ed, f->handthrowvel, vel);
+	XR_SetFloat (ed, f->handvelmag, vr_xr_hand[main_hand].speed);
+	// the muzzle is the aim ray's origin, which is what weapons fire from
+	XR_SetVector (ed, f->muzzlepos, pos);
+
+	// off hand
+	XR_HandToWorld (&vr_xr_hand[off_hand], origin, pos, ang, vel);
+	XR_SetVector (ed, f->offhandpos, pos);
+	XR_SetVector (ed, f->offhandrot, ang);
+	XR_SetVector (ed, f->offhandvel, vel);
+	XR_SetVector (ed, f->offhandthrowvel, vel);
+	XR_SetFloat (ed, f->offhandvelmag, vr_xr_hand[off_hand].speed);
+	XR_SetVector (ed, f->offmuzzlepos, pos);
+
+	XR_SetVector (ed, f->headvel, head_v);
+	XR_SetFloat (ed, f->vryaw, cl.viewangles[YAW]);
+
+	// room-scale movement, as a velocity, exactly as quakevr sends it
+	// (vr.cpp:4615-4617)
+	if (host_frametime > 0.0)
+	{
+		vec3_t rs;
+		const float inv_dt = (float)(1.0 / host_frametime);
+		rs[0] = xr_roomscale_delta[0] * inv_dt;
+		rs[1] = xr_roomscale_delta[1] * inv_dt;
+		rs[2] = 0.0f;
+		XR_SetVector (ed, f->roomscalemove, rs);
+	}
+
+	// vrbits0: quakevr's per-frame VR state bitfield (vr.cpp:4477-4499)
+	{
+		float bits = 0.0f;
+		if (vr_xr_hand[off_hand].grip > 0.5f)
+			bits += (float)QVR_VRBITS0_OFFHAND_GRABBING;
+		if (vr_xr_hand[main_hand].grip > 0.5f)
+			bits += (float)QVR_VRBITS0_MAINHAND_GRABBING;
+		{
+			vec3_t unused;
+			if (XR_TwoHandedAim (main_hand, unused))
+				bits += (float)QVR_VRBITS0_2H_AIMING;
+		}
+		XR_SetFloat (ed, f->vrbits0, bits);
+	}
+
+	XR_SetFloat (ed, f->ishuman, 1.0f);
+}
+
+/*
 ===============
 VR_XR_Haptic
 ===============

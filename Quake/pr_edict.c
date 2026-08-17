@@ -2130,6 +2130,7 @@ qboolean PR_LoadProgs (const char *filename, qboolean fatal, unsigned int needcr
 	QCEXTFIELDS_ALL
 	QCEXTFIELDS_GAME
 	QCEXTFIELDS_SS
+	QCEXTFIELDS_VR
 #undef QCEXTFIELD
 	PR_FindEntityFields ();
 
