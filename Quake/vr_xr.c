@@ -53,20 +53,26 @@ static void VR_XR_ScaleDump_f (void);
 // (vr_cvars.cpp:173-187).
 cvar_t vr_gun_debug = {"vr_gun_debug", "0", CVAR_NONE};
 
-// quakevr's per-weapon offset table, off by default.
+// quakevr's per-weapon offset table. On: the offsets are required, not
+// cosmetic.
 //
-// The numbers are quakevr's verbatim, but they are measured relative to its
-// controller frame: OpenVR's raw pose plus a 32-degree correction. OpenXR's
-// aim pose is a different frame -- measured grip->aim here is roughly
-// (-26, -135, -93), nowhere near a 32-degree pitch -- so those offsets are
-// rotated into the wrong place. With ofs_z running from 10 to 41 units, that
-// is between one and five feet of displacement, which is what put the weapon
-// above the controller.
+// I had this off for a while on the theory that the offsets encoded quakevr's
+// controller frame and so could not port. Measuring the models says otherwise.
+// The offsets are overwhelmingly shrink-compensation along each model's own
+// axes: a model is scaled about its bounding-box min, so shrinking it pulls it
+// away from the hand by about (1 - scale) * extent, and the offset puts it
+// back. Hence the inverse correlation through the whole table -- scale 0.8
+// wants ofs_z 8.5, scale 0.5 wants 13-19, scale 0.33 wants 37, scale 0.25
+// wants 41. Drop them and the heavily-shrunk weapons are the worst off.
 //
-// Off, the model is drawn at the hand, which is correct to within the model's
-// own origin. Set to 1 to apply the table once it has been retuned for this
-// frame.
-cvar_t vr_wpn_offsets = {"vr_wpn_offsets", "0", CVAR_ARCHIVE};
+// vkQuake consumes scale_origin exactly as quakevr does, translate then scale
+// (r_alias.c:533-538 against quakevr's trMat), so the numbers carry over as-is.
+//
+// What the offsets are is an amplifier: scale_origin is rotated by the entity
+// angles, so with offsets reaching 41 units any error in the weapon's rotation
+// is magnified into inches or feet of displacement. If the weapon sits wrong,
+// suspect the rotation and not this table.
+cvar_t vr_wpn_offsets = {"vr_wpn_offsets", "1", CVAR_ARCHIVE};
 
 // Pre-rotation of the weapon relative to the controller. quakevr applies this
 // to the controller matrix before deriving handrot, and every offset in the
@@ -2514,9 +2520,12 @@ void VR_XR_ModAllModels (void)
 {
 	vec3_t scale, offset;
 
-	if (!vr_xr_active)
-		return;
-
+	// Deliberately not gated on vr_xr_active, for the same reason
+	// VR_XR_ApplyWeaponModelMod is not gated on the session running: this runs
+	// at map load, and the headset reports inactive whenever it is idle or off
+	// the head. Loading a map in that state would leave every model unmodified
+	// for the rest of the map with nothing to re-apply it. quakevr calls
+	// VR_ModAllModels unconditionally (common.cpp:2421, host.cpp:1299).
 	if (vr_vrtorso_enabled.value)
 	{
 		scale[0] = vr_vrtorso_x_scale.value;
