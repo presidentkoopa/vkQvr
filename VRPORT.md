@@ -89,10 +89,10 @@ Legend: **[x]** done · **[~]** partial · **[ ]** not started
 
 - [x] 61. quakevr asset paks installed (64 models incl. torso, holsters, fingers)
 - [x] 62. VR torso + leg holster model scale/offset
-- [ ] 63. Torso actually positioned per-frame (`vr_vrtorso_*`, 12 cvars)
-- [ ] 64. Hand models rendered with per-finger frames
-- [ ] 65. VR HUD — `VR_Draw2D` / `VR_DrawSbar` (7 `vr_sbar*` cvars)
-- [ ] 66. VR menu + virtual keyboard (3 `vr_menu*` cvars)
+- [x] 63. Torso positioned per-frame
+- [x] 64. Hand models rendered with per-finger frames
+- [x] 65. VR HUD — 2D canvas on a world-space panel
+- [~] 66. VR menu — on the panel with the HUD; virtual keyboard not ported
 - [ ] 67. Crosshair modes (4 `vr_crosshair*` cvars)
 - [ ] 68. Laser sight — have a dlight dot; quakevr has proper modes
 - [ ] 69. `vr_show*` debug visualisations (5 cvars)
@@ -116,15 +116,15 @@ All four from the audit are fixed. Nothing outstanding that is known to be wrong
 
 ## Score
 
-**~44 of 76 done.** Engine, tracking, controllers and the QuakeC bridge are
-complete. What remains is largely presentation (HUD, menu, hand and body
-rendering) and gameplay tuning cvars.
+**~50 of 76 done.** Engine, tracking, controllers, the QuakeC bridge, the VR
+body and the HUD are complete. What remains is gameplay tuning cvars and a few
+presentation extras.
 
 ## Next, in order
 
-1. Hand models rendered with per-finger frames (#64) — the models are installed
-2. VR torso positioned per-frame (#63)
-3. VR HUD (#65) — the 2D bar is currently painted flat across the view
-4. Weapon weight simulation (#45) and 2H grab rules (#47)
-5. Force grab (#57) and throwing tuning (#58)
-6. Holsters persisting across level change (#56) — needs spawnparm extension
+1. Force grab (#57) — 8 cvars, pulls items to the hand
+2. Weapon weight simulation (#45) and 2H grab rules (#47)
+3. Weapon-mounted buttons (#32) and flick reload (#33)
+4. Crosshair modes (#67) and proper laser sight (#68)
+5. Holsters persisting across level change (#56) — needs spawnparm extension
+6. `VK_KHR_multiview` (#12) — halves the render cost
