@@ -52,6 +52,12 @@ static vec3_t	xr_roomscale_consumed;
 static vec3_t	xr_roomscale_delta;
 static qboolean xr_head_pos_valid = false;
 
+// Head yaw within play space, i.e. excluding whatever the player has turned to
+// with the stick. Movement is head-relative, but the server derives its
+// movement basis from the angles we send it -- which are the hand's when hand
+// aiming is on -- so this is needed to correct for the difference.
+static float xr_head_yaw = 0.0f;
+
 // mathlib.h only provides the one direction
 #define RAD2DEG(a) ((a) / M_PI_DIV_180)
 
@@ -139,6 +145,13 @@ void VR_XR_Init (void)
 	Cvar_RegisterVariable (&vr_deadzone);
 	Cvar_RegisterVariable (&vr_roomscale);
 	Cvar_RegisterVariable (&vr_roomscale_mult);
+	Cvar_RegisterVariable (&vr_hand_aiming);
+	Cvar_RegisterVariable (&vr_aim_hand);
+	Cvar_RegisterVariable (&vr_gun_offset_x);
+	Cvar_RegisterVariable (&vr_gun_offset_y);
+	Cvar_RegisterVariable (&vr_gun_offset_z);
+	Cvar_RegisterVariable (&vr_melee_threshold);
+	Cvar_RegisterVariable (&vr_haptics);
 
 	if (COM_CheckParm ("-novr") || !COM_CheckParm ("-vr"))
 		return; // flat mode; say nothing
@@ -1639,19 +1652,39 @@ XR_LocateHand
 Same coordinate conversion the head uses (quakevr vr.cpp:3511).
 ===============
 */
-static qboolean XR_LocateHand (XrSpace space, XrTime time, vec3_t out_pos, vec3_t out_angles)
+static qboolean XR_LocateHand (XrSpace space, XrTime time, vec3_t out_pos, vec3_t out_angles, vec3_t out_vel)
 {
 	XrSpaceLocation loc;
+	XrSpaceVelocity vel;
 	float			scale = VR_METERS_TO_UNITS;
 
 	if (space == XR_NULL_HANDLE)
 		return false;
 
+	memset (&vel, 0, sizeof (vel));
+	vel.type = XR_TYPE_SPACE_VELOCITY;
+
 	memset (&loc, 0, sizeof (loc));
 	loc.type = XR_TYPE_SPACE_LOCATION;
+	// ask for velocity alongside the pose: the runtime's own figure is far
+	// steadier than differencing positions across frames
+	if (out_vel)
+		loc.next = &vel;
 
 	if (XR_FAILED (xrLocateSpace (space, xr_space, time, &loc)))
 		return false;
+
+	if (out_vel)
+	{
+		out_vel[0] = out_vel[1] = out_vel[2] = 0.0f;
+		if (vel.velocityFlags & XR_SPACE_VELOCITY_LINEAR_VALID_BIT)
+		{
+			out_vel[0] = -vel.linearVelocity.z * scale;
+			out_vel[1] = -vel.linearVelocity.x * scale;
+			out_vel[2] = vel.linearVelocity.y * scale;
+		}
+	}
+
 	if (!(loc.locationFlags & XR_SPACE_LOCATION_POSITION_VALID_BIT) || !(loc.locationFlags & XR_SPACE_LOCATION_ORIENTATION_VALID_BIT))
 		return false;
 
@@ -1695,8 +1728,9 @@ void VR_XR_SyncInput (void)
 
 		// located at predicted display time, like the head, so hands and view
 		// agree rather than drifting apart by a frame
-		h->tracked = XR_LocateHand (xr_pose_space[hand], xr_frame_state.predictedDisplayTime, h->pos, h->angles);
-		XR_LocateHand (xr_aim_space[hand], xr_frame_state.predictedDisplayTime, h->aim_pos, h->aim_angles);
+		h->tracked = XR_LocateHand (xr_pose_space[hand], xr_frame_state.predictedDisplayTime, h->pos, h->angles, h->velocity);
+		XR_LocateHand (xr_aim_space[hand], xr_frame_state.predictedDisplayTime, h->aim_pos, h->aim_angles, NULL);
+		h->speed = sqrtf (h->velocity[0] * h->velocity[0] + h->velocity[1] * h->velocity[1] + h->velocity[2] * h->velocity[2]);
 
 		h->trigger = XR_ReadFloat (xr_act_trigger, hand);
 		h->grip = XR_ReadFloat (xr_act_grip, hand);
@@ -1728,6 +1762,105 @@ cvar_t vr_deadzone = {"vr_deadzone", "0.2", CVAR_ARCHIVE};
 cvar_t vr_roomscale = {"vr_roomscale", "1", CVAR_ARCHIVE};
 cvar_t vr_roomscale_mult = {"vr_roomscale_mult", "1", CVAR_ARCHIVE};
 
+// Point the weapon with the controller instead of the head.
+cvar_t vr_hand_aiming = {"vr_hand_aiming", "1", CVAR_ARCHIVE};
+cvar_t vr_aim_hand = {"vr_aim_hand", "1", CVAR_ARCHIVE}; // 1 = right
+
+// Where the gun model sits relative to the hand. Quake's viewmodels have their
+// origin at the shoulder end rather than the grip, so it needs pushing forward.
+cvar_t vr_gun_offset_x = {"vr_gun_offset_x", "0", CVAR_ARCHIVE};
+cvar_t vr_gun_offset_y = {"vr_gun_offset_y", "0", CVAR_ARCHIVE};
+cvar_t vr_gun_offset_z = {"vr_gun_offset_z", "0", CVAR_ARCHIVE};
+
+// Quake units/sec the hand must be moving to register a melee swing.
+cvar_t vr_melee_threshold = {"vr_melee_threshold", "120", CVAR_ARCHIVE};
+cvar_t vr_haptics = {"vr_haptics", "1", CVAR_ARCHIVE};
+
+/*
+===============
+VR_XR_HandSpeed
+===============
+*/
+float VR_XR_HandSpeed (int hand)
+{
+	if (!xr_input_ready || hand < 0 || hand >= VR_HANDS)
+		return 0.0f;
+	return vr_xr_hand[hand].speed;
+}
+
+/*
+===============
+VR_XR_WeaponPose
+
+Puts the gun where the hand is. The hand pose is in play space, so it has to be
+rotated by the body yaw and offset from the player's origin the same way the
+view is.
+===============
+*/
+qboolean VR_XR_WeaponPose (const vec3_t player_origin, vec3_t out_origin, vec3_t out_angles)
+{
+	int			hand;
+	const vr_hand_t *h;
+	float		yaw, s, c;
+	vec3_t		local;
+
+	if (!xr_input_ready || !vr_hand_aiming.value || !VR_XR_SessionRunning ())
+		return false;
+
+	hand = vr_aim_hand.value ? VR_HAND_RIGHT : VR_HAND_LEFT;
+	h = &vr_xr_hand[hand];
+	if (!h->tracked)
+		return false;
+
+	// same rebase the view uses: drop whatever room-scale walking already moved
+	// the player, so the gun does not drift away from them
+	local[0] = h->pos[0] - xr_roomscale_consumed[0] + vr_gun_offset_x.value;
+	local[1] = h->pos[1] - xr_roomscale_consumed[1] + vr_gun_offset_y.value;
+	local[2] = h->pos[2] + vr_gun_offset_z.value;
+
+	yaw = DEG2RAD (cl.viewangles[YAW]);
+	s = sinf (yaw);
+	c = cosf (yaw);
+
+	out_origin[0] = player_origin[0] + local[0] * c - local[1] * s;
+	out_origin[1] = player_origin[1] + local[0] * s + local[1] * c;
+	out_origin[2] = player_origin[2] + local[2];
+
+	// the aim ray is what the weapon should point along, not the grip
+	VectorCopy (h->aim_angles, out_angles);
+	out_angles[YAW] += cl.viewangles[YAW];
+	// viewmodels are drawn with inverted pitch, matching CalcGunAngle
+	out_angles[PITCH] = -out_angles[PITCH];
+	return true;
+}
+
+/*
+===============
+VR_XR_AimAngles
+
+The aim pose is the controller's pointing ray, which is what the runtime
+intends for weapons -- distinct from the grip pose, which is where the hand
+physically sits.
+===============
+*/
+qboolean VR_XR_AimAngles (vec3_t out_angles)
+{
+	int hand;
+
+	if (!xr_input_ready || !vr_hand_aiming.value || !VR_XR_SessionRunning ())
+		return false;
+
+	hand = vr_aim_hand.value ? VR_HAND_RIGHT : VR_HAND_LEFT;
+	if (!vr_xr_hand[hand].tracked)
+		return false;
+
+	VectorCopy (vr_xr_hand[hand].aim_angles, out_angles);
+	// hand angles are in play space; the body yaw the player has turned to with
+	// the stick sits underneath, exactly as it does for the head
+	out_angles[YAW] += cl.viewangles[YAW];
+	return true;
+}
+
 /*
 ===============
 XR_UpdateRoomscale
@@ -1753,6 +1886,12 @@ static void XR_UpdateRoomscale (void)
 	head[0] = -0.5f * (xr_views[0].pose.position.z + xr_views[1].pose.position.z) * scale;
 	head[1] = -0.5f * (xr_views[0].pose.position.x + xr_views[1].pose.position.x) * scale;
 	head[2] = 0.5f * (xr_views[0].pose.position.y + xr_views[1].pose.position.y) * scale;
+
+	{
+		vec3_t head_angles;
+		XR_QuatToQuakeAngles (&xr_views[0].pose.orientation, head_angles);
+		xr_head_yaw = head_angles[YAW];
+	}
 
 	if (!xr_head_pos_valid)
 	{
@@ -1869,6 +2008,23 @@ void VR_XR_Move (usercmd_t *cmd)
 		cmd->forwardmove += wx * c + wy * s;
 		cmd->sidemove += -wx * s + wy * c;
 	}
+
+	// The server builds its movement basis from the angles we send it, and with
+	// hand aiming those are the controller's, not the head's. Counter-rotate by
+	// the difference so pushing the stick forward still walks where the player
+	// is looking rather than where they happen to be pointing the gun.
+	{
+		vec3_t aim;
+		if (VR_XR_AimAngles (aim))
+		{
+			const float delta = DEG2RAD (xr_head_yaw + cl.viewangles[YAW] - aim[YAW]);
+			const float s = sinf (delta), c = cosf (delta);
+			const float f = cmd->forwardmove, r = cmd->sidemove;
+
+			cmd->forwardmove = f * c - r * s;
+			cmd->sidemove = f * s + r * c;
+		}
+	}
 }
 
 /*
@@ -1878,15 +2034,57 @@ VR_XR_Buttons
 */
 unsigned int VR_XR_Buttons (void)
 {
+	static qboolean was_firing = false;
+	static qboolean melee_armed = true;
+	static int		last_health = 0;
+
 	unsigned int bits = 0;
+	int			 aim = vr_aim_hand.value ? VR_HAND_RIGHT : VR_HAND_LEFT;
+	qboolean	 firing;
 
 	if (!xr_input_ready || !VR_XR_SessionRunning ())
 		return 0;
 
-	if (vr_xr_hand[VR_HAND_RIGHT].trigger > 0.5f)
+	firing = vr_xr_hand[aim].trigger > 0.5f;
+
+	// Melee: swing the aiming hand hard enough and it counts as an attack.
+	// Genuinely swung, not merely moved -- the threshold has to be high enough
+	// that walking around does not flail the axe. quakevr does the same, gated
+	// on handvelmag against vr_melee_threshold.
+	if (vr_melee_threshold.value > 0.0f)
+	{
+		const float speed = vr_xr_hand[aim].speed;
+		if (speed < vr_melee_threshold.value * 0.5f)
+			melee_armed = true; // must slow down before another swing counts
+		else if (speed > vr_melee_threshold.value && melee_armed)
+		{
+			melee_armed = false;
+			firing = true;
+			if (vr_haptics.value)
+				VR_XR_Haptic (aim, 0.06f, 180.0f, 0.6f);
+		}
+	}
+
+	if (firing)
 		bits |= 1; // attack
 	if (vr_xr_hand[VR_HAND_RIGHT].btn_a || vr_xr_hand[VR_HAND_LEFT].btn_a)
 		bits |= 2; // jump
+
+	if (vr_haptics.value)
+	{
+		// a short kick as the shot goes off, not continuously while held
+		if (firing && !was_firing)
+			VR_XR_Haptic (aim, 0.05f, 160.0f, 0.75f);
+
+		// and a heavier one on both hands when the player takes damage
+		if (cl.stats[STAT_HEALTH] < last_health && last_health > 0)
+		{
+			VR_XR_Haptic (VR_HAND_LEFT, 0.15f, 90.0f, 0.9f);
+			VR_XR_Haptic (VR_HAND_RIGHT, 0.15f, 90.0f, 0.9f);
+		}
+	}
+	last_health = cl.stats[STAT_HEALTH];
+	was_firing = firing;
 
 	return bits;
 }

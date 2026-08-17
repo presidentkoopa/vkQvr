@@ -416,6 +416,15 @@ void CL_BaseMove (usercmd_t *cmd)
 
 	VectorCopy (cl.viewangles, cmd->viewangles);
 
+	// Weapons fire along the angles we send, while the view comes from
+	// cl.viewangles -- so overriding here aims with the hand without moving the
+	// camera. VR_XR_Move compensates the movement vector for the difference.
+	{
+		vec3_t vr_aim;
+		if (VR_XR_AimAngles (vr_aim))
+			VectorCopy (vr_aim, cmd->viewangles);
+	}
+
 	if (cls.signon != SIGNONS)
 		return;
 

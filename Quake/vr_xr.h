@@ -117,6 +117,9 @@ typedef struct
 	float grip;	   // 0..1, grab
 	float stick[2];
 
+	vec3_t velocity; // Quake units/sec, from the runtime rather than differenced
+	float  speed;	 // magnitude of the above
+
 	qboolean btn_a;		 // A / X
 	qboolean btn_b;		 // B / Y
 	qboolean btn_stick;	 // thumbstick click
@@ -153,5 +156,26 @@ extern cvar_t vr_snap_turn;
 extern cvar_t vr_deadzone;
 extern cvar_t vr_roomscale;
 extern cvar_t vr_roomscale_mult;
+extern cvar_t vr_aim_hand;    // 0 = left, 1 = right
+extern cvar_t vr_hand_aiming; // 0 = aim with the head, as before
+
+// Direction the weapon should fire in, from the aiming hand's pointing ray.
+// Returns false when hand aiming is off or the hand is not tracked, in which
+// case the caller keeps using the view angles.
+qboolean VR_XR_AimAngles (vec3_t out_angles);
+
+// Places the weapon viewmodel in the aiming hand. player_origin is the player
+// entity's origin, which the hand pose is relative to. Returns false when hand
+// aiming is off, leaving the caller's normal head-attached gun alone.
+qboolean VR_XR_WeaponPose (const vec3_t player_origin, vec3_t out_origin, vec3_t out_angles);
+
+// Per-hand linear speed in Quake units/sec, for velocity-driven melee.
+float VR_XR_HandSpeed (int hand);
+
+extern cvar_t vr_gun_offset_x;
+extern cvar_t vr_gun_offset_y;
+extern cvar_t vr_gun_offset_z;
+extern cvar_t vr_melee_threshold;
+extern cvar_t vr_haptics;
 
 #endif /* _VR_XR_H */

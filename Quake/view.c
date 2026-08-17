@@ -772,6 +772,18 @@ void V_CalcRefdef (void)
 		view->origin[i] += forward[i] * bob * 0.4;
 	view->origin[2] += bob;
 
+	// VR: put the gun in the player's hand instead of bolted to their face.
+	// Done after the bob and offsets above so none of that applies -- a weapon
+	// held in a tracked hand should not also bob with the walk cycle.
+	{
+		vec3_t vr_org, vr_ang;
+		if (VR_XR_WeaponPose (ent->origin, vr_org, vr_ang))
+		{
+			VectorCopy (vr_org, view->origin);
+			VectorCopy (vr_ang, view->angles);
+		}
+	}
+
 	// johnfitz -- removed all gun position fudging code (was used to keep gun from getting covered by sbar)
 	// MarkV -- restored this with r_viewmodel_quake cvar
 	if (r_viewmodel_quake.value)
