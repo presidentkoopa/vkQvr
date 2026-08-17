@@ -172,10 +172,21 @@ qboolean VR_XR_WeaponPose (const vec3_t player_origin, vec3_t out_origin, vec3_t
 // Per-hand linear speed in Quake units/sec, for velocity-driven melee.
 float VR_XR_HandSpeed (int hand);
 
+// Impulse to send this frame (weapon switching from the off hand), or 0.
+int VR_XR_Impulse (void);
+
+// Places a dynamic light where the aiming hand is pointing, as a laser dot.
+// Called once per frame from the host loop.
+void VR_XR_UpdateLaser (void);
+
 extern cvar_t vr_gun_offset_x;
 extern cvar_t vr_gun_offset_y;
 extern cvar_t vr_gun_offset_z;
 extern cvar_t vr_melee_threshold;
 extern cvar_t vr_haptics;
+extern cvar_t vr_laser;
+extern cvar_t vr_two_handed;
+extern cvar_t vr_two_hand_dist;
+extern cvar_t vr_height_calibration;
 
 #endif /* _VR_XR_H */

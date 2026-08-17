@@ -483,6 +483,10 @@ void CL_FinishMove (usercmd_t *cmd)
 	bits |= VR_XR_Buttons (); // trigger = attack, A/X = jump
 
 	cmd->buttons = bits;
+
+	if (!in_impulse)
+		in_impulse = VR_XR_Impulse (); // off-hand stick cycles weapons
+
 	cmd->impulse = in_impulse;
 
 	in_impulse = 0;
@@ -534,10 +538,14 @@ void CL_SendMove (const usercmd_t *cmd)
 			// spike -- proquake servers bump client->server angles up to at least 16bit. this is safe because it only happens when both client+server advertise
 			// it, and because it never actually gets recorded into demos anyway. spike -- predinfo also always means 16bit angles, even if for some reason the
 			// server doesn't advertise proquake (like dp).
+			// cmd->viewangles, not cl.viewangles: these are identical outside VR
+			// (CL_BaseMove copies one to the other), but in VR the command
+			// carries the hand's aim direction while the view stays on the head.
+			// Sending cl.viewangles here discarded the aim override entirely.
 			if (cl.protocol == PROTOCOL_NETQUAKE && !NET_QSocketGetProQuakeAngleHack (cls.netcon) && !(cl.protocol_pext2 & PEXT2_PREDINFO))
-				MSG_WriteAngle (&buf, cl.viewangles[i], cl.protocolflags);
+				MSG_WriteAngle (&buf, cmd->viewangles[i], cl.protocolflags);
 			else
-				MSG_WriteAngle16 (&buf, cl.viewangles[i], cl.protocolflags);
+				MSG_WriteAngle16 (&buf, cmd->viewangles[i], cl.protocolflags);
 		// johnfitz
 
 		MSG_WriteShort (&buf, cmd->forwardmove);

@@ -1127,6 +1127,9 @@ static void _Host_Frame (double time)
 	if (cls.state == ca_connected)
 		CL_ReadFromServer ();
 
+	// laser dot goes in after the world state is current, before rendering
+	VR_XR_UpdateLaser ();
+
 	// update video
 	if (host_speeds.value)
 		time1 = Sys_DoubleTime ();

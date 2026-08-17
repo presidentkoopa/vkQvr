@@ -41,6 +41,8 @@ static XrSystemId xr_system = XR_NULL_SYSTEM_ID;
 static void XR_DestroySession (void);
 static void XR_AcquireEyes (void);
 static void XR_UpdateRoomscale (void);
+static void VR_XR_Calibrate_f (void);
+static void VR_XR_Recenter_f (void);
 
 // Room-scale bookkeeping. Head position in play space (Quake units) last frame,
 // the delta to hand to the movement command, and the running total already
@@ -152,6 +154,13 @@ void VR_XR_Init (void)
 	Cvar_RegisterVariable (&vr_gun_offset_z);
 	Cvar_RegisterVariable (&vr_melee_threshold);
 	Cvar_RegisterVariable (&vr_haptics);
+	Cvar_RegisterVariable (&vr_laser);
+	Cvar_RegisterVariable (&vr_two_handed);
+	Cvar_RegisterVariable (&vr_two_hand_dist);
+	Cvar_RegisterVariable (&vr_height_calibration);
+
+	Cmd_AddCommand ("vr_calibrate", VR_XR_Calibrate_f);
+	Cmd_AddCommand ("vr_recenter", VR_XR_Recenter_f);
 
 	if (COM_CheckParm ("-novr") || !COM_CheckParm ("-vr"))
 		return; // flat mode; say nothing
@@ -1776,6 +1785,54 @@ cvar_t vr_gun_offset_z = {"vr_gun_offset_z", "0", CVAR_ARCHIVE};
 cvar_t vr_melee_threshold = {"vr_melee_threshold", "120", CVAR_ARCHIVE};
 cvar_t vr_haptics = {"vr_haptics", "1", CVAR_ARCHIVE};
 
+// Laser dot: hand aiming is close to unusable without some feedback about
+// where the gun is actually pointing.
+cvar_t vr_laser = {"vr_laser", "1", CVAR_ARCHIVE};
+
+// Two-handed aiming: grip with the off hand to steady a long gun. Aim then runs
+// along the line between the hands rather than one controller's ray, which is
+// both steadier and how you would actually hold a rifle.
+cvar_t vr_two_handed = {"vr_two_handed", "1", CVAR_ARCHIVE};
+cvar_t vr_two_hand_dist = {"vr_two_hand_dist", "24", CVAR_ARCHIVE}; // max hand separation, Quake units
+
+// Player standing height in metres, used by "vr_calibrate".
+cvar_t vr_height_calibration = {"vr_height_calibration", "1.6", CVAR_ARCHIVE};
+
+/*
+===============
+XR_TwoHandedAim
+
+Returns true and fills out_angles when the off hand is gripping close enough to
+the main hand to count as supporting the weapon.
+===============
+*/
+static qboolean XR_TwoHandedAim (int main_hand, vec3_t out_angles)
+{
+	const int	off_hand = main_hand ^ 1;
+	vec3_t		dir;
+	float		len;
+
+	if (!vr_two_handed.value)
+		return false;
+	if (!vr_xr_hand[main_hand].tracked || !vr_xr_hand[off_hand].tracked)
+		return false;
+	if (vr_xr_hand[off_hand].grip < 0.5f)
+		return false;
+
+	VectorSubtract (vr_xr_hand[main_hand].pos, vr_xr_hand[off_hand].pos, dir);
+	len = VectorLength (dir);
+
+	// too far apart and the off hand is doing something else entirely
+	if (len < 1.0f || len > vr_two_hand_dist.value)
+		return false;
+
+	// front hand supports, rear hand holds: the barrel runs off-hand -> main
+	out_angles[YAW] = RAD2DEG (atan2f (dir[1], dir[0]));
+	out_angles[PITCH] = -RAD2DEG (asinf (CLAMP (-1.0f, dir[2] / len, 1.0f)));
+	out_angles[ROLL] = 0.0f;
+	return true;
+}
+
 /*
 ===============
 VR_XR_HandSpeed
@@ -1854,11 +1911,54 @@ qboolean VR_XR_AimAngles (vec3_t out_angles)
 	if (!vr_xr_hand[hand].tracked)
 		return false;
 
-	VectorCopy (vr_xr_hand[hand].aim_angles, out_angles);
+	if (!XR_TwoHandedAim (hand, out_angles))
+		VectorCopy (vr_xr_hand[hand].aim_angles, out_angles);
+
 	// hand angles are in play space; the body yaw the player has turned to with
 	// the stick sits underneath, exactly as it does for the head
 	out_angles[YAW] += cl.viewangles[YAW];
 	return true;
+}
+
+/*
+===============
+VR_XR_UpdateLaser
+
+A dynamic light at the impact point. Cheap, needs no new rendering path, and
+reads as a laser dot because it lights the surface it lands on.
+===============
+*/
+void VR_XR_UpdateLaser (void)
+{
+	vec3_t	  origin, angles, forward, right, up, end, impact;
+	dlight_t *dl;
+
+	if (!vr_laser.value || cls.state != ca_connected || cl.intermission)
+		return;
+	if (!VR_XR_WeaponPose (cl.entities[cl.viewentity].origin, origin, angles))
+		return;
+
+	// the viewmodel is drawn with inverted pitch, so undo that to get a real
+	// direction back out
+	angles[PITCH] = -angles[PITCH];
+	AngleVectors (angles, forward, right, up);
+
+	VectorMA (origin, 8192.0f, forward, end);
+	TraceLine (origin, end, impact);
+	if (VectorLength (impact) == 0.0f)
+		return; // hit nothing worth marking
+
+	dl = CL_AllocDlight (0);
+	if (!dl)
+		return;
+
+	VectorCopy (impact, dl->origin);
+	dl->radius = 32.0f;
+	dl->die = cl.time + 0.05f; // one frame; re-placed every frame
+	dl->decay = 0.0f;
+	dl->color[0] = 1.0f;
+	dl->color[1] = 0.15f;
+	dl->color[2] = 0.1f;
 }
 
 /*
@@ -2087,6 +2187,83 @@ unsigned int VR_XR_Buttons (void)
 	was_firing = firing;
 
 	return bits;
+}
+
+/*
+===============
+VR_XR_Impulse
+
+Off-hand stick left/right cycles weapons. Edge triggered: one weapon per push,
+and the stick has to return near centre before it fires again.
+===============
+*/
+int VR_XR_Impulse (void)
+{
+	static qboolean armed = true;
+	const int		off_hand = vr_aim_hand.value ? VR_HAND_LEFT : VR_HAND_RIGHT;
+	float			x;
+
+	if (!xr_input_ready || !VR_XR_SessionRunning ())
+		return 0;
+
+	x = vr_xr_hand[off_hand].stick[0];
+
+	if (fabsf (x) < 0.4f)
+	{
+		armed = true;
+		return 0;
+	}
+
+	if (!armed)
+		return 0;
+	armed = false;
+
+	if (vr_haptics.value)
+		VR_XR_Haptic (off_hand, 0.04f, 200.0f, 0.4f);
+
+	return x > 0.0f ? 10 : 12; // impulse 10 = next weapon, 12 = previous
+}
+
+/*
+===============
+VR_XR_Calibrate_f
+
+Sets vr_floor_offset from where the player's head actually is, so the in-game
+eye height matches theirs instead of assuming a standard body.
+===============
+*/
+static void VR_XR_Calibrate_f (void)
+{
+	float measured, target;
+
+	if (!VR_XR_SessionRunning () || !xr_head_pos_valid)
+	{
+		Con_Printf ("vr_calibrate: no headset tracking\n");
+		return;
+	}
+
+	// current head height above the play space floor, in Quake units
+	measured = xr_last_head_pos[2];
+	// where Quake wants the eye to be relative to the player origin
+	target = (float)DEFAULT_VIEWHEIGHT;
+
+	Cvar_SetValue ("vr_floor_offset", target - measured);
+	Con_Printf ("vr_calibrate: head at %.1f units, floor offset now %.1f\n", measured, target - measured);
+}
+
+/*
+===============
+VR_XR_Recenter_f
+
+Forgets the room-scale movement consumed so far, which re-anchors the player to
+wherever they are physically standing now.
+===============
+*/
+static void VR_XR_Recenter_f (void)
+{
+	xr_roomscale_consumed[0] = xr_roomscale_consumed[1] = xr_roomscale_consumed[2] = 0.0f;
+	xr_head_pos_valid = false;
+	Con_Printf ("vr_recenter: play space re-anchored\n");
 }
 
 /*
