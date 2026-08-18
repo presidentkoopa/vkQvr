@@ -5197,7 +5197,7 @@ Cached per model, since it depends only on the mesh.
 */
 static int XR_FindGripPointIndex (aliashdr_t *hdr)
 {
-	float min_x, max_x, cutoff, min_z, max_z, z_cutoff, sum[3], best_d;
+	float min_x, max_x, cutoff, z_cutoff, sum[3], best_d;
 	int	  i, count, best;
 
 	if (hdr->gripvalid)
@@ -5216,21 +5216,20 @@ static int XR_FindGripPointIndex (aliashdr_t *hdr)
 	// the rearmost fifth of the model's length counts as "the back"
 	cutoff = min_x + (max_x - min_x) * 0.2f;
 
-	// within that, the lower half, so the barrel and receiver do not drag the
-	// answer up out of the grip
-	min_z = 255.0f;
-	max_z = 0.0f;
-	for (i = 0; i < hdr->numverts; i++)
-	{
-		const float z = (float)hdr->anchorverts[i].v[2];
-		if ((float)hdr->anchorverts[i].v[0] > cutoff)
-			continue;
-		if (z < min_z)
-			min_z = z;
-		if (z > max_z)
-			max_z = z;
-	}
-	z_cutoff = min_z + (max_z - min_z) * 0.5f;
+	// The whole of that region, top to bottom.
+	//
+	// This used to keep only its lower half, meaning to avoid the barrel
+	// dragging the answer up. It overcorrected: the anchor came out at the very
+	// bottom edge of the stock, so once the weapon was seated the entire gun
+	// sat on top of the hand rather than in it. Measured on v_shot the model
+	// spanned 8.1 to 16.8 in the entity frame with the anchor at 9.5, putting
+	// 0.22m of gun above the hand and none below. v_shot2, v_nail and v_rock2
+	// all did the same.
+	//
+	// Averaging the full rear region puts it in the lower third instead, which
+	// is where a hand closes around a weapon: v_shot then runs 0.08m below the
+	// hand to 0.18m above it.
+	z_cutoff = 255.0f;
 
 	// Average the region rather than taking an extreme. The lowest vertex is
 	// on the outer surface by definition -- the bottom edge of the stock -- and
