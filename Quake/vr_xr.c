@@ -45,6 +45,8 @@ static int	XR_ComputeHotSpot (const vec3_t hand_world, const vec3_t player_origi
 static void VR_XR_Calibrate_f (void);
 static void VR_XR_Recenter_f (void);
 static void VR_XR_ScaleDump_f (void);
+static void VR_XR_BodyDump_f (void);
+static float XR_CrouchRatio (void);
 
 // Finger tracking cvars, declared here because VR_XR_Init registers them well
 // before the finger-tracking section defines them. Defaults are quakevr's
@@ -104,8 +106,8 @@ cvar_t vr_wpn_pos_weight_mult = {"vr_wpn_pos_weight_mult", "1.0", CVAR_ARCHIVE};
 cvar_t vr_wpn_pos_weight_2h_help_offset = {"vr_wpn_pos_weight_2h_help_offset", "0.3", CVAR_ARCHIVE};
 cvar_t vr_wpn_pos_weight_2h_help_mult = {"vr_wpn_pos_weight_2h_help_mult", "1.0", CVAR_ARCHIVE};
 cvar_t vr_wpn_dir_weight = {"vr_wpn_dir_weight", "1", CVAR_ARCHIVE};
-cvar_t vr_wpn_dir_weight_offset = {"vr_wpn_dir_weight_offset", "0.0", CVAR_ARCHIVE};
-cvar_t vr_wpn_dir_weight_mult = {"vr_wpn_dir_weight_mult", "1.0", CVAR_ARCHIVE};
+cvar_t vr_wpn_dir_weight_offset = {"vr_wpn_dir_weight_offset", "0.05", CVAR_ARCHIVE};
+cvar_t vr_wpn_dir_weight_mult = {"vr_wpn_dir_weight_mult", "1", CVAR_ARCHIVE};
 cvar_t vr_wpn_dir_weight_2h_help_offset = {"vr_wpn_dir_weight_2h_help_offset", "0.3", CVAR_ARCHIVE};
 cvar_t vr_wpn_dir_weight_2h_help_mult = {"vr_wpn_dir_weight_2h_help_mult", "1.0", CVAR_ARCHIVE};
 
@@ -113,9 +115,13 @@ cvar_t vr_wpn_dir_weight_2h_help_mult = {"vr_wpn_dir_weight_2h_help_mult", "1.0"
 // (VR_GetWpnAngleOffsets, vr.cpp:815, used by CalcGunAngle at view.cpp:706),
 // so it rotates the model without moving the aim direction the shot follows.
 // That is the knob for a weapon that fires true but hangs at the wrong angle.
-cvar_t vr_gunmodelpitch = {"vr_gunmodelpitch", "0", CVAR_ARCHIVE};
+cvar_t vr_gunmodelpitch = {"vr_gunmodelpitch", "7", CVAR_ARCHIVE};
 
-// Hand size. quakevr has no equivalent -- it never scales hand_base.mdl at all,
+// Hand size. quakevr never scales hand_base.mdl and its shipped finger offsets
+// are tuned against an unscaled palm, so 1.0 is its real look. Kept as a knob
+// because these hands are large: 13.1 units, 0.40m at the shipped world scale.
+// Old comment follows, from when this was derived at the wrong world scale.
+// quakevr has no equivalent -- it never scales hand_base.mdl at all,
 // registering only hand.mdl at scale 0 to keep the weapon placeholder hidden.
 //
 // The default is derived from quakevr's own sizing rule rather than picked.
@@ -137,7 +143,7 @@ cvar_t vr_hand_grips_weapon = {"vr_hand_grips_weapon", "1", CVAR_ARCHIVE};
 // -1 means work the grip out from the mesh; 0 or above pins a specific vertex.
 cvar_t vr_grip_vertex = {"vr_grip_vertex", "-1", CVAR_ARCHIVE};
 
-cvar_t vr_hand_scale = {"vr_hand_scale", "0.38", CVAR_ARCHIVE};
+cvar_t vr_hand_scale = {"vr_hand_scale", "1.0", CVAR_ARCHIVE};
 
 // Measured in the headset: the OpenXR aim pose on this hardware points about
 // 30 degrees above where the controller actually is, so everything derived from
@@ -173,20 +179,20 @@ cvar_t vr_show_virtual_stock = {"vr_show_virtual_stock", "0", CVAR_ARCHIVE};
 
 // aiming and movement modes. 6 is quakevr's controller-aiming default.
 cvar_t vr_aimmode = {"vr_aimmode", "6", CVAR_ARCHIVE};
-cvar_t vr_movement_mode = {"vr_movement_mode", "0", CVAR_ARCHIVE};
+cvar_t vr_movement_mode = {"vr_movement_mode", "1", CVAR_ARCHIVE};
 
 // room-scale jumping: rise fast enough, from high enough, and the player jumps
 cvar_t vr_roomscale_jump = {"vr_roomscale_jump", "1", CVAR_ARCHIVE};
-cvar_t vr_roomscale_jump_threshold = {"vr_roomscale_jump_threshold", "1.0", CVAR_ARCHIVE};
-cvar_t vr_roomscale_move_mult = {"vr_roomscale_move_mult", "1.0", CVAR_ARCHIVE};
+cvar_t vr_roomscale_jump_threshold = {"vr_roomscale_jump_threshold", "0.8", CVAR_ARCHIVE};
+cvar_t vr_roomscale_move_mult = {"vr_roomscale_move_mult", "1", CVAR_ARCHIVE};
 
 // throwing. 0 uses the averaged hand velocity, 1 adds the spin of the wrist.
-cvar_t vr_throw_algorithm = {"vr_throw_algorithm", "0", CVAR_ARCHIVE};
-cvar_t vr_throw_up_center_of_mass = {"vr_throw_up_center_of_mass", "0.1", CVAR_ARCHIVE};
+cvar_t vr_throw_algorithm = {"vr_throw_algorithm", "1", CVAR_ARCHIVE};
+cvar_t vr_throw_up_center_of_mass = {"vr_throw_up_center_of_mass", "0.01", CVAR_ARCHIVE};
 
 // the off hand can be angled differently from the main one
-cvar_t vr_offhandpitch = {"vr_offhandpitch", "0.0", CVAR_ARCHIVE};
-cvar_t vr_offhandyaw = {"vr_offhandyaw", "0.0", CVAR_ARCHIVE};
+cvar_t vr_offhandpitch = {"vr_offhandpitch", "40.25", CVAR_ARCHIVE};
+cvar_t vr_offhandyaw = {"vr_offhandyaw", "-4", CVAR_ARCHIVE};
 
 // comfort and input
 cvar_t vr_viewkick = {"vr_viewkick", "0", CVAR_NONE};
@@ -199,21 +205,21 @@ cvar_t vr_fakevr_handroll = {"vr_fakevr_handroll", "0", CVAR_NONE};
 
 // world-space HUD and status bar
 cvar_t vr_hud_scale = {"vr_hud_scale", "0.025", CVAR_ARCHIVE};
-cvar_t vr_sbar_mode = {"vr_sbar_mode", "0", CVAR_ARCHIVE};
-cvar_t vr_sbar_offset_x = {"vr_sbar_offset_x", "0", CVAR_ARCHIVE};
-cvar_t vr_sbar_offset_y = {"vr_sbar_offset_y", "0", CVAR_ARCHIVE};
-cvar_t vr_sbar_offset_z = {"vr_sbar_offset_z", "0", CVAR_ARCHIVE};
-cvar_t vr_sbar_offset_pitch = {"vr_sbar_offset_pitch", "0", CVAR_ARCHIVE};
-cvar_t vr_sbar_offset_yaw = {"vr_sbar_offset_yaw", "0", CVAR_ARCHIVE};
-cvar_t vr_sbar_offset_roll = {"vr_sbar_offset_roll", "0", CVAR_ARCHIVE};
+cvar_t vr_sbar_mode = {"vr_sbar_mode", "1", CVAR_ARCHIVE};
+cvar_t vr_sbar_offset_x = {"vr_sbar_offset_x", "-12", CVAR_ARCHIVE};
+cvar_t vr_sbar_offset_y = {"vr_sbar_offset_y", "1", CVAR_ARCHIVE};
+cvar_t vr_sbar_offset_z = {"vr_sbar_offset_z", "-3", CVAR_ARCHIVE};
+cvar_t vr_sbar_offset_pitch = {"vr_sbar_offset_pitch", "1", CVAR_ARCHIVE};
+cvar_t vr_sbar_offset_yaw = {"vr_sbar_offset_yaw", "1.6", CVAR_ARCHIVE};
+cvar_t vr_sbar_offset_roll = {"vr_sbar_offset_roll", "-0.3", CVAR_ARCHIVE};
 cvar_t vr_menumode = {"vr_menumode", "0", CVAR_ARCHIVE};
 cvar_t vr_menu_mouse_pointer_hand = {"vr_menu_mouse_pointer_hand", "1", CVAR_ARCHIVE};
 
 // crosshair
-cvar_t vr_crosshair = {"vr_crosshair", "1", CVAR_ARCHIVE};
+cvar_t vr_crosshair = {"vr_crosshair", "0", CVAR_ARCHIVE};
 cvar_t vr_crosshair_depth = {"vr_crosshair_depth", "0", CVAR_ARCHIVE};
-cvar_t vr_crosshair_size = {"vr_crosshair_size", "3.0", CVAR_ARCHIVE};
-cvar_t vr_crosshair_alpha = {"vr_crosshair_alpha", "0.25", CVAR_ARCHIVE};
+cvar_t vr_crosshair_size = {"vr_crosshair_size", "1", CVAR_ARCHIVE};
+cvar_t vr_crosshair_alpha = {"vr_crosshair_alpha", "0.85", CVAR_ARCHIVE};
 cvar_t vr_crosshairy = {"vr_crosshairy", "0", CVAR_ARCHIVE};
 
 // flick reload: spin the wrist hard enough about X and the weapon reloads
@@ -238,7 +244,7 @@ cvar_t vr_debug_show_hand_pos_and_rot = {"vr_debug_show_hand_pos_and_rot", "0", 
 cvar_t vr_activestartpaknameidx = {"vr_activestartpaknameidx", "0", CVAR_ARCHIVE};
 
 cvar_t vr_gunroll = {"vr_gunroll", "0", CVAR_ARCHIVE};
-cvar_t vr_gun_z_offset = {"vr_gun_z_offset", "0", CVAR_ARCHIVE};
+cvar_t vr_gun_z_offset = {"vr_gun_z_offset", "-1", CVAR_ARCHIVE};
 /*
 ================================================================================
 
@@ -270,7 +276,7 @@ cvar_t vr_fakevr = {"vr_fakevr", "0", CVAR_NONE};
 cvar_t vr_forcegrab_mode = {"vr_forcegrab_mode", "1", CVAR_ARCHIVE};
 cvar_t vr_forcegrab_powermult = {"vr_forcegrab_powermult", "0.75", CVAR_ARCHIVE};
 cvar_t vr_forcegrab_range = {"vr_forcegrab_range", "150.0", CVAR_ARCHIVE};
-cvar_t vr_forcegrab_radius = {"vr_forcegrab_radius", "18.0", CVAR_ARCHIVE};
+cvar_t vr_forcegrab_radius = {"vr_forcegrab_radius", "18", CVAR_ARCHIVE};
 cvar_t vr_forcegrab_eligible_particles = {"vr_forcegrab_eligible_particles", "1", CVAR_ARCHIVE};
 cvar_t vr_forcegrab_eligible_haptics = {"vr_forcegrab_eligible_haptics", "1", CVAR_ARCHIVE};
 cvar_t vr_forcegrabbable_ammo_boxes = {"vr_forcegrabbable_ammo_boxes", "1", CVAR_ARCHIVE};
@@ -290,14 +296,14 @@ cvar_t vr_headbutt_velocity_threshold = {"vr_headbutt_velocity_threshold", "2.02
 
 // drops from enemies and ammo boxes
 cvar_t vr_enemy_drops = {"vr_enemy_drops", "0", CVAR_ARCHIVE};
-cvar_t vr_enemy_drops_chance_mult = {"vr_enemy_drops_chance_mult", "1.0", CVAR_ARCHIVE};
+cvar_t vr_enemy_drops_chance_mult = {"vr_enemy_drops_chance_mult", "1", CVAR_ARCHIVE};
 cvar_t vr_ammobox_drops = {"vr_ammobox_drops", "0", CVAR_ARCHIVE};
-cvar_t vr_ammobox_drops_chance_mult = {"vr_ammobox_drops_chance_mult", "1.0", CVAR_ARCHIVE};
+cvar_t vr_ammobox_drops_chance_mult = {"vr_ammobox_drops_chance_mult", "1", CVAR_ARCHIVE};
 
 // handling
 cvar_t vr_positional_damage = {"vr_positional_damage", "1", CVAR_ARCHIVE};
 cvar_t vr_holster_mode = {"vr_holster_mode", "0", CVAR_ARCHIVE};
-cvar_t vr_holster_haptics = {"vr_holster_haptics", "1", CVAR_ARCHIVE};
+cvar_t vr_holster_haptics = {"vr_holster_haptics", "2", CVAR_ARCHIVE};
 cvar_t vr_reload_mode = {"vr_reload_mode", "2", CVAR_ARCHIVE};
 cvar_t vr_weapon_cycle_mode = {"vr_weapon_cycle_mode", "0", CVAR_ARCHIVE};
 cvar_t vr_weapondrop_particles = {"vr_weapondrop_particles", "1", CVAR_ARCHIVE};
@@ -321,43 +327,43 @@ cvar_t vr_verbosebots = {"vr_verbosebots", "0", CVAR_ARCHIVE};
 */
 
 // whole hand: base and fingers together
-cvar_t vr_fingers_and_base_x = {"vr_fingers_and_base_x", "0.0", CVAR_ARCHIVE};
-cvar_t vr_fingers_and_base_y = {"vr_fingers_and_base_y", "0.0", CVAR_ARCHIVE};
-cvar_t vr_fingers_and_base_z = {"vr_fingers_and_base_z", "0.0", CVAR_ARCHIVE};
+cvar_t vr_fingers_and_base_x = {"vr_fingers_and_base_x", "1.925", CVAR_ARCHIVE};
+cvar_t vr_fingers_and_base_y = {"vr_fingers_and_base_y", "-2.825", CVAR_ARCHIVE};
+cvar_t vr_fingers_and_base_z = {"vr_fingers_and_base_z", "-2.075", CVAR_ARCHIVE};
 
 // added on top for the off hand only
-cvar_t vr_fingers_and_base_offhand_x = {"vr_fingers_and_base_offhand_x", "0.0", CVAR_ARCHIVE};
-cvar_t vr_fingers_and_base_offhand_y = {"vr_fingers_and_base_offhand_y", "0.0", CVAR_ARCHIVE};
+cvar_t vr_fingers_and_base_offhand_x = {"vr_fingers_and_base_offhand_x", "0", CVAR_ARCHIVE};
+cvar_t vr_fingers_and_base_offhand_y = {"vr_fingers_and_base_offhand_y", "0", CVAR_ARCHIVE};
 cvar_t vr_fingers_and_base_offhand_z = {"vr_fingers_and_base_offhand_z", "0.0", CVAR_ARCHIVE};
 
 // all five fingers as a group, not the palm
-cvar_t vr_fingers_x = {"vr_fingers_x", "0.0", CVAR_ARCHIVE};
-cvar_t vr_fingers_y = {"vr_fingers_y", "0.0", CVAR_ARCHIVE};
-cvar_t vr_fingers_z = {"vr_fingers_z", "0.0", CVAR_ARCHIVE};
+cvar_t vr_fingers_x = {"vr_fingers_x", "-5.05", CVAR_ARCHIVE};
+cvar_t vr_fingers_y = {"vr_fingers_y", "-0.1", CVAR_ARCHIVE};
+cvar_t vr_fingers_z = {"vr_fingers_z", "-0.1875", CVAR_ARCHIVE};
 
 // the palm alone
-cvar_t vr_finger_base_x = {"vr_finger_base_x", "0.0", CVAR_ARCHIVE};
+cvar_t vr_finger_base_x = {"vr_finger_base_x", "0", CVAR_ARCHIVE};
 cvar_t vr_finger_base_y = {"vr_finger_base_y", "0.0", CVAR_ARCHIVE};
 cvar_t vr_finger_base_z = {"vr_finger_base_z", "0.0", CVAR_ARCHIVE};
 
 // and one finger at a time
-cvar_t vr_finger_thumb_x = {"vr_finger_thumb_x", "0.0", CVAR_ARCHIVE};
-cvar_t vr_finger_thumb_y = {"vr_finger_thumb_y", "0.0", CVAR_ARCHIVE};
-cvar_t vr_finger_thumb_z = {"vr_finger_thumb_z", "0.0", CVAR_ARCHIVE};
-cvar_t vr_finger_index_x = {"vr_finger_index_x", "0.0", CVAR_ARCHIVE};
-cvar_t vr_finger_index_y = {"vr_finger_index_y", "0.0", CVAR_ARCHIVE};
-cvar_t vr_finger_index_z = {"vr_finger_index_z", "0.0", CVAR_ARCHIVE};
-cvar_t vr_finger_middle_x = {"vr_finger_middle_x", "0.0", CVAR_ARCHIVE};
-cvar_t vr_finger_middle_y = {"vr_finger_middle_y", "0.0", CVAR_ARCHIVE};
-cvar_t vr_finger_middle_z = {"vr_finger_middle_z", "0.0", CVAR_ARCHIVE};
-cvar_t vr_finger_ring_x = {"vr_finger_ring_x", "0.0", CVAR_ARCHIVE};
-cvar_t vr_finger_ring_y = {"vr_finger_ring_y", "0.0", CVAR_ARCHIVE};
-cvar_t vr_finger_ring_z = {"vr_finger_ring_z", "0.0", CVAR_ARCHIVE};
-cvar_t vr_finger_pinky_x = {"vr_finger_pinky_x", "0.0", CVAR_ARCHIVE};
-cvar_t vr_finger_pinky_y = {"vr_finger_pinky_y", "0.0", CVAR_ARCHIVE};
-cvar_t vr_finger_pinky_z = {"vr_finger_pinky_z", "0.0", CVAR_ARCHIVE};
+cvar_t vr_finger_thumb_x = {"vr_finger_thumb_x", "-0.3625", CVAR_ARCHIVE};
+cvar_t vr_finger_thumb_y = {"vr_finger_thumb_y", "3.2625", CVAR_ARCHIVE};
+cvar_t vr_finger_thumb_z = {"vr_finger_thumb_z", "-1.9375", CVAR_ARCHIVE};
+cvar_t vr_finger_index_x = {"vr_finger_index_x", "-0.325", CVAR_ARCHIVE};
+cvar_t vr_finger_index_y = {"vr_finger_index_y", "0.6125", CVAR_ARCHIVE};
+cvar_t vr_finger_index_z = {"vr_finger_index_z", "-1.825", CVAR_ARCHIVE};
+cvar_t vr_finger_middle_x = {"vr_finger_middle_x", "-0.3625", CVAR_ARCHIVE};
+cvar_t vr_finger_middle_y = {"vr_finger_middle_y", "0.5125", CVAR_ARCHIVE};
+cvar_t vr_finger_middle_z = {"vr_finger_middle_z", "-0.3125", CVAR_ARCHIVE};
+cvar_t vr_finger_ring_x = {"vr_finger_ring_x", "-0.3625", CVAR_ARCHIVE};
+cvar_t vr_finger_ring_y = {"vr_finger_ring_y", "0.7", CVAR_ARCHIVE};
+cvar_t vr_finger_ring_z = {"vr_finger_ring_z", "0.65", CVAR_ARCHIVE};
+cvar_t vr_finger_pinky_x = {"vr_finger_pinky_x", "-0.325", CVAR_ARCHIVE};
+cvar_t vr_finger_pinky_y = {"vr_finger_pinky_y", "1.15", CVAR_ARCHIVE};
+cvar_t vr_finger_pinky_z = {"vr_finger_pinky_z", "1.6375", CVAR_ARCHIVE};
 
-cvar_t vr_finger_grip_bias = {"vr_finger_grip_bias", "0.0", CVAR_ARCHIVE};
+cvar_t vr_finger_grip_bias = {"vr_finger_grip_bias", "0", CVAR_ARCHIVE};
 cvar_t vr_finger_auto_close_thumb = {"vr_finger_auto_close_thumb", "1", CVAR_ARCHIVE};
 cvar_t vr_finger_blending = {"vr_finger_blending", "1", CVAR_ARCHIVE};
 cvar_t vr_finger_blending_speed = {"vr_finger_blending_speed", "50", CVAR_ARCHIVE};
@@ -679,6 +685,7 @@ void VR_XR_Init (void)
 
 	Cmd_AddCommand ("vr_recenter", VR_XR_Recenter_f);
 	Cmd_AddCommand ("vr_scaledump", VR_XR_ScaleDump_f);
+	Cmd_AddCommand ("vr_bodydump", VR_XR_BodyDump_f);
 
 	if (COM_CheckParm ("-novr") || !COM_CheckParm ("-vr"))
 		return; // flat mode; say nothing
@@ -1597,12 +1604,12 @@ int vr_xr_current_eye = -1;
 // A Quake unit is 1.5 inches, so world scale 1.0 works out to ~26.25 units per
 // metre -- expressing it as a multiplier rather than a raw unit count means 1.0
 // is "life size" and players can reason about it.
-cvar_t vr_world_scale = {"vr_world_scale", "1.0", CVAR_ARCHIVE};
+cvar_t vr_world_scale = {"vr_world_scale", "1.25", CVAR_ARCHIVE};
 
 // The runtime reports head position relative to the floor, but Quake's player
 // origin sits at the middle of the bounding box, not the feet. quakevr settled
 // on -16 units to reconcile the two. (quakevr vr_cvars.cpp:60)
-cvar_t vr_floor_offset = {"vr_floor_offset", "-16", CVAR_ARCHIVE};
+cvar_t vr_floor_offset = {"vr_floor_offset", "-21", CVAR_ARCHIVE};
 
 #define VR_METERS_TO_UNITS (vr_world_scale.value / (1.5f * 0.0254f))
 
@@ -1848,6 +1855,40 @@ void VR_XR_EndFrame (void)
 				vr_xr_hand[0].tracked, vr_xr_hand[0].pos[0], vr_xr_hand[0].pos[1], vr_xr_hand[0].pos[2], vr_xr_hand[0].trigger, vr_xr_hand[0].grip,
 				vr_xr_hand[0].stick[0], vr_xr_hand[0].stick[1], vr_xr_hand[1].tracked, vr_xr_hand[1].pos[0], vr_xr_hand[1].pos[1], vr_xr_hand[1].pos[2],
 				vr_xr_hand[1].trigger, vr_xr_hand[1].grip, vr_xr_hand[1].stick[0], vr_xr_hand[1].stick[1]);
+
+			// body placement, so torso and holster positions can be read off a
+			// running session instead of reasoned about
+			if (cl.viewentity > 0 && cl.viewentity < cl.max_edicts && cl.entities)
+			{
+				const float pz = cl.entities[cl.viewentity].origin[2];
+				vec3_t		lh, rh, lu, ru, ls;
+				float		t0 = 0.0f, t1 = 0.0f;
+
+				if (cl.vrtorso.model && cl.vrtorso.model->type == mod_alias)
+				{
+					aliashdr_t *th = (aliashdr_t *)Mod_Extradata (cl.vrtorso.model);
+					if (th)
+					{
+						t0 = cl.vrtorso.origin[2] - pz + th->scale_origin[2];
+						t1 = t0 + th->scale[2] * 255.0f;
+					}
+				}
+
+				VR_XR_HolsterSpot (QVR_HS_LEFT_HIP_HOLSTER, lh);
+				VR_XR_HolsterSpot (QVR_HS_RIGHT_HIP_HOLSTER, rh);
+				VR_XR_HolsterSpot (QVR_HS_LEFT_UPPER_HOLSTER, lu);
+				VR_XR_HolsterSpot (QVR_HS_RIGHT_UPPER_HOLSTER, ru);
+				VR_XR_HolsterSpot (QVR_HS_LEFT_SHOULDER_HOLSTER, ls);
+
+				Con_Printf (
+					"XR body: scale %.1f u/m | torso z %.1f spans %.1f..%.1f | Lhip(%.0f %.0f %.0f) Lupr(%.0f %.0f %.0f) Lshl(%.0f %.0f %.0f) | hip-upr %.1f\n",
+					VR_METERS_TO_UNITS, cl.vrtorso.origin[2] - pz, t0, t1, lh[0] - cl.entities[cl.viewentity].origin[0],
+					lh[1] - cl.entities[cl.viewentity].origin[1], lh[2] - pz, lu[0] - cl.entities[cl.viewentity].origin[0],
+					lu[1] - cl.entities[cl.viewentity].origin[1], lu[2] - pz, ls[0] - cl.entities[cl.viewentity].origin[0],
+					ls[1] - cl.entities[cl.viewentity].origin[1], ls[2] - pz,
+					sqrtf (
+						(lh[0] - lu[0]) * (lh[0] - lu[0]) + (lh[1] - lu[1]) * (lh[1] - lu[1]) + (lh[2] - lu[2]) * (lh[2] - lu[2])));
+			}
 
 			// The whole weapon position chain, end to end, so a report of the
 			// gun sitting wrong can be attributed instead of guessed at.
@@ -2812,33 +2853,38 @@ cvar_t vr_two_handed = {"vr_two_handed", "1", CVAR_ARCHIVE};
 cvar_t vr_two_hand_dist = {"vr_two_hand_dist", "24", CVAR_ARCHIVE}; // max hand separation, Quake units
 
 // Player standing height in metres, used by "vr_calibrate".
-cvar_t vr_height_calibration = {"vr_height_calibration", "1.6", CVAR_ARCHIVE};
+cvar_t vr_height_calibration = {"vr_height_calibration", "1.646099", CVAR_ARCHIVE};
 
 // Global gun model tweaks, on top of the per-weapon table.
-cvar_t vr_gunmodelscale = {"vr_gunmodelscale", "1.0", CVAR_ARCHIVE};
-cvar_t vr_gunmodely = {"vr_gunmodely", "0", CVAR_ARCHIVE};
+cvar_t vr_gunmodelscale = {"vr_gunmodelscale", "0.7", CVAR_ARCHIVE};
+cvar_t vr_gunmodely = {"vr_gunmodely", "1.3", CVAR_ARCHIVE};
 
 // VR body and leg holsters. Defaults are quakevr's (vr_cvars.cpp:123-145).
 cvar_t vr_vrtorso_enabled = {"vr_vrtorso_enabled", "1", CVAR_ARCHIVE};
-cvar_t vr_vrtorso_x_offset = {"vr_vrtorso_x_offset", "-3.25", CVAR_ARCHIVE};
-cvar_t vr_vrtorso_y_offset = {"vr_vrtorso_y_offset", "0.0", CVAR_ARCHIVE};
+cvar_t vr_vrtorso_x_offset = {"vr_vrtorso_x_offset", "-2.75", CVAR_ARCHIVE};
+cvar_t vr_vrtorso_y_offset = {"vr_vrtorso_y_offset", "-4.75", CVAR_ARCHIVE};
 // Not quakevr's -21: that belongs to its head_z_mult formula, which the change
 // of world scale breaks. The torso now hangs from the head by the model's own
 // height, so this is a nudge from there and starts at zero.
-cvar_t vr_vrtorso_z_offset = {"vr_vrtorso_z_offset", "0", CVAR_ARCHIVE};
-cvar_t vr_vrtorso_head_z_mult = {"vr_vrtorso_head_z_mult", "32.0", CVAR_ARCHIVE};
-cvar_t vr_vrtorso_x_scale = {"vr_vrtorso_x_scale", "1.0", CVAR_ARCHIVE};
-cvar_t vr_vrtorso_y_scale = {"vr_vrtorso_y_scale", "1.0", CVAR_ARCHIVE};
-cvar_t vr_vrtorso_z_scale = {"vr_vrtorso_z_scale", "1.0", CVAR_ARCHIVE};
-cvar_t vr_vrtorso_pitch = {"vr_vrtorso_pitch", "0.0", CVAR_ARCHIVE};
-cvar_t vr_vrtorso_yaw = {"vr_vrtorso_yaw", "0.0", CVAR_ARCHIVE};
-cvar_t vr_vrtorso_roll = {"vr_vrtorso_roll", "0.0", CVAR_ARCHIVE};
+// quakevr ships -45, which puts the top of the torso exactly at the eyes. That
+// is right for the author, whose vr_height_calibration is 1.646099; a taller
+// player needs it lower, because the head_z_mult term scales with head height.
+// Measured here: top landed at head +0.6, so -51 drops the neck about 5 units
+// below the eyes, which is where a neck goes.
+cvar_t vr_vrtorso_z_offset = {"vr_vrtorso_z_offset", "-51", CVAR_ARCHIVE};
+cvar_t vr_vrtorso_head_z_mult = {"vr_vrtorso_head_z_mult", "33", CVAR_ARCHIVE};
+cvar_t vr_vrtorso_x_scale = {"vr_vrtorso_x_scale", "0.675", CVAR_ARCHIVE};
+cvar_t vr_vrtorso_y_scale = {"vr_vrtorso_y_scale", "0.675", CVAR_ARCHIVE};
+cvar_t vr_vrtorso_z_scale = {"vr_vrtorso_z_scale", "1.1", CVAR_ARCHIVE};
+cvar_t vr_vrtorso_pitch = {"vr_vrtorso_pitch", "1.5", CVAR_ARCHIVE};
+cvar_t vr_vrtorso_yaw = {"vr_vrtorso_yaw", "0", CVAR_ARCHIVE};
+cvar_t vr_vrtorso_roll = {"vr_vrtorso_roll", "0", CVAR_ARCHIVE};
 
 cvar_t vr_leg_holster_model_enabled = {"vr_leg_holster_model_enabled", "1", CVAR_ARCHIVE};
-cvar_t vr_leg_holster_model_scale = {"vr_leg_holster_model_scale", "1", CVAR_ARCHIVE};
-cvar_t vr_leg_holster_model_x_offset = {"vr_leg_holster_model_x_offset", "0.0", CVAR_ARCHIVE};
-cvar_t vr_leg_holster_model_y_offset = {"vr_leg_holster_model_y_offset", "0.0", CVAR_ARCHIVE};
-cvar_t vr_leg_holster_model_z_offset = {"vr_leg_holster_model_z_offset", "0.0", CVAR_ARCHIVE};
+cvar_t vr_leg_holster_model_scale = {"vr_leg_holster_model_scale", "0.5", CVAR_ARCHIVE};
+cvar_t vr_leg_holster_model_x_offset = {"vr_leg_holster_model_x_offset", "1", CVAR_ARCHIVE};
+cvar_t vr_leg_holster_model_y_offset = {"vr_leg_holster_model_y_offset", "1.25", CVAR_ARCHIVE};
+cvar_t vr_leg_holster_model_z_offset = {"vr_leg_holster_model_z_offset", "2.25", CVAR_ARCHIVE};
 
 /*
 	WEAPON MODEL OFFSETS
@@ -3135,6 +3181,67 @@ scale can be answered with numbers instead of another guess. "ratio" is the
 factor against the model's own authored size: 1.0 is untouched.
 ===============
 */
+/*
+===============
+VR_XR_BodyDump_f
+
+Prints where the body actually is, so placement can be argued from numbers.
+Everything is in Quake units relative to the player entity, except the scales.
+===============
+*/
+static void VR_XR_BodyDump_f (void)
+{
+	static const int hs[6] = {QVR_HS_LEFT_SHOULDER_HOLSTER, QVR_HS_RIGHT_SHOULDER_HOLSTER, QVR_HS_LEFT_HIP_HOLSTER,
+							  QVR_HS_RIGHT_HIP_HOLSTER,		QVR_HS_LEFT_UPPER_HOLSTER,	  QVR_HS_RIGHT_UPPER_HOLSTER};
+	static const char *hn[6] = {"L shoulder", "R shoulder", "L hip", "R hip", "L upper", "R upper"};
+	vec3_t			   po;
+	int				   i;
+
+	if (cl.viewentity <= 0 || cl.viewentity >= cl.max_edicts || !cl.entities)
+	{
+		Con_Printf ("no player\n");
+		return;
+	}
+	VectorCopy (cl.entities[cl.viewentity].origin, po);
+
+	Con_Printf ("world_scale %.3f -> %.2f units/m | floor_offset %.1f | height_cal %.3f\n", vr_world_scale.value, VR_METERS_TO_UNITS, vr_floor_offset.value,
+				vr_height_calibration.value);
+	Con_Printf ("head z %.1f (rel player) | crouch %.2f\n", xr_head_pos_valid ? xr_last_head_pos[2] : 0.0f, XR_CrouchRatio ());
+
+	{
+		float head_m = xr_head_pos_valid ? ((xr_last_head_pos[2] - vr_floor_offset.value) / VR_METERS_TO_UNITS) : 0.0f;
+		Con_Printf ("torso: head %.3f m * mult %.1f + ofs %.1f = z %.1f (rel player)\n", head_m, vr_vrtorso_head_z_mult.value, vr_vrtorso_z_offset.value,
+					cl.vrtorso.origin[2] - po[2]);
+
+		if (cl.vrtorso.model && cl.vrtorso.model->type == mod_alias)
+		{
+			aliashdr_t *th = (aliashdr_t *)Mod_Extradata (cl.vrtorso.model);
+			if (th)
+				Con_Printf (
+					"torso: scale %.3f %.3f %.3f  origin_z %.1f  spans z %.1f .. %.1f (rel player)\n", th->scale[0], th->scale[1], th->scale[2],
+					th->scale_origin[2], cl.vrtorso.origin[2] - po[2] + th->scale_origin[2],
+					cl.vrtorso.origin[2] - po[2] + th->scale_origin[2] + th->scale[2] * 255.0f);
+		}
+	}
+
+	for (i = 0; i < 6; i++)
+	{
+		vec3_t s;
+		if (VR_XR_HolsterSpot (hs[i], s))
+			Con_Printf ("  %-11s x %6.1f  y %6.1f  z %6.1f\n", hn[i], s[0] - po[0], s[1] - po[1], s[2] - po[2]);
+	}
+
+	{
+		qmodel_t *m = Mod_ForName ("progs/legholster.mdl", false);
+		if (m && m->type == mod_alias)
+		{
+			aliashdr_t *h = (aliashdr_t *)Mod_Extradata (m);
+			if (h)
+				Con_Printf ("legholster: drawn size %.1f %.1f %.1f\n", h->scale[0] * 255.0f, h->scale[1] * 255.0f, h->scale[2] * 255.0f);
+		}
+	}
+}
+
 static void VR_XR_ScaleDump_f (void)
 {
 	static const char *names[] = {
@@ -4498,24 +4605,24 @@ void VR_XR_ResolveGunCollision (vec3_t hand_pos, const vec3_t hand_angles, float
 ================================================================================
 */
 
-cvar_t vr_shoulder_offset_x = {"vr_shoulder_offset_x", "-1.5", CVAR_ARCHIVE};
+cvar_t vr_shoulder_offset_x = {"vr_shoulder_offset_x", "-1", CVAR_ARCHIVE};
 cvar_t vr_shoulder_offset_y = {"vr_shoulder_offset_y", "1.75", CVAR_ARCHIVE};
-cvar_t vr_shoulder_offset_z = {"vr_shoulder_offset_z", "16.0", CVAR_ARCHIVE};
+cvar_t vr_shoulder_offset_z = {"vr_shoulder_offset_z", "16", CVAR_ARCHIVE};
 
-cvar_t vr_hip_offset_x = {"vr_hip_offset_x", "-1.0", CVAR_ARCHIVE};
+cvar_t vr_hip_offset_x = {"vr_hip_offset_x", "-3.5", CVAR_ARCHIVE};
 cvar_t vr_hip_offset_y = {"vr_hip_offset_y", "7.0", CVAR_ARCHIVE};
-cvar_t vr_hip_offset_z = {"vr_hip_offset_z", "4.5", CVAR_ARCHIVE};
-cvar_t vr_hip_holster_thresh = {"vr_hip_holster_thresh", "6.0", CVAR_ARCHIVE};
+cvar_t vr_hip_offset_z = {"vr_hip_offset_z", "0", CVAR_ARCHIVE};
+cvar_t vr_hip_holster_thresh = {"vr_hip_holster_thresh", "6.5", CVAR_ARCHIVE};
 
-cvar_t vr_shoulder_holster_offset_x = {"vr_shoulder_holster_offset_x", "5.0", CVAR_ARCHIVE};
-cvar_t vr_shoulder_holster_offset_y = {"vr_shoulder_holster_offset_y", "1.5", CVAR_ARCHIVE};
-cvar_t vr_shoulder_holster_offset_z = {"vr_shoulder_holster_offset_z", "0.0", CVAR_ARCHIVE};
-cvar_t vr_shoulder_holster_thresh = {"vr_shoulder_holster_thresh", "8.0", CVAR_ARCHIVE};
+cvar_t vr_shoulder_holster_offset_x = {"vr_shoulder_holster_offset_x", "-0.5", CVAR_ARCHIVE};
+cvar_t vr_shoulder_holster_offset_y = {"vr_shoulder_holster_offset_y", "2.25", CVAR_ARCHIVE};
+cvar_t vr_shoulder_holster_offset_z = {"vr_shoulder_holster_offset_z", "-0.25", CVAR_ARCHIVE};
+cvar_t vr_shoulder_holster_thresh = {"vr_shoulder_holster_thresh", "7.8", CVAR_ARCHIVE};
 
-cvar_t vr_upper_holster_offset_x = {"vr_upper_holster_offset_x", "2.5", CVAR_ARCHIVE};
-cvar_t vr_upper_holster_offset_y = {"vr_upper_holster_offset_y", "6.5", CVAR_ARCHIVE};
-cvar_t vr_upper_holster_offset_z = {"vr_upper_holster_offset_z", "2.5", CVAR_ARCHIVE};
-cvar_t vr_upper_holster_thresh = {"vr_upper_holster_thresh", "6.0", CVAR_ARCHIVE};
+cvar_t vr_upper_holster_offset_x = {"vr_upper_holster_offset_x", "-4.25", CVAR_ARCHIVE};
+cvar_t vr_upper_holster_offset_y = {"vr_upper_holster_offset_y", "7", CVAR_ARCHIVE};
+cvar_t vr_upper_holster_offset_z = {"vr_upper_holster_offset_z", "8.5", CVAR_ARCHIVE};
+cvar_t vr_upper_holster_thresh = {"vr_upper_holster_thresh", "6.5", CVAR_ARCHIVE};
 
 /*
 XR_CrouchRatio
@@ -5279,31 +5386,18 @@ void VR_XR_SetupBodyEntities (void)
 	VectorMA (cl.vrtorso.origin, -(torso_crouch * 14.0f), fwd, cl.vrtorso.origin);
 	VectorMA (cl.vrtorso.origin, vr_vrtorso_y_offset.value, right, cl.vrtorso.origin);
 
-	// Hang the torso from the head, by the model's own measured height.
+	// quakevr's own arithmetic, which works now that the world scale is its own
+	// (view.cpp:1245-1246). VR_GetHeadOrigin is in metres, so the stored head
+	// height is converted back and vr_floor_offset removed.
 	//
-	// quakevr does origin[2] += headMetres * vr_vrtorso_head_z_mult + z_offset
-	// (view.cpp:1245-1246). Its 32 is Quake's native units per metre and this
-	// runs at 26.25, so the same arithmetic puts the torso above the head:
-	// player_origin + 39 against a head at + 33. No value of z_offset repairs
-	// that, because the error grows with the player's height.
-	//
-	// Measuring the model needs no magic number at all. vrtorso.mdl spans from
-	// scale_origin[2] up to scale_origin[2] + scale[2] * 255, so putting its
-	// top at the head puts the neck at the neck -- whatever the world scale,
-	// whatever the player's height. vr_vrtorso_z_offset nudges from there.
-	{
-		float top = 0.0f;
-
-		if (cl.vrtorso.model && cl.vrtorso.model->type == mod_alias)
-		{
-			aliashdr_t *th = (aliashdr_t *)Mod_Extradata (cl.vrtorso.model);
-			if (th)
-				top = th->scale_origin[2] + th->scale[2] * 255.0f;
-		}
-
-		head_height = xr_head_pos_valid ? xr_last_head_pos[2] : 0.0f;
-		cl.vrtorso.origin[2] += head_height - top;
-	}
+	// This failed earlier only because the world scale was the code default of
+	// 1.0, giving 26.25 units per metre against the head_z_mult of 33 that
+	// quakevr's shipped config assumes. At its shipped world scale of 1.25 --
+	// 32.8 units per metre, near Quake's native 32 -- the multiplier and the
+	// -45 offset land the torso where they were tuned to.
+	head_height = xr_head_pos_valid ? ((xr_last_head_pos[2] - vr_floor_offset.value) / VR_METERS_TO_UNITS) : 0.0f;
+	cl.vrtorso.origin[2] += head_height * vr_vrtorso_head_z_mult.value;
+	cl.vrtorso.origin[2] += vr_vrtorso_z_offset.value;
 }
 
 /*
@@ -5321,8 +5415,8 @@ void VR_XR_SetupBodyEntities (void)
 ================================================================================
 */
 
-cvar_t vr_menu_scale = {"vr_menu_scale", "0.13", CVAR_ARCHIVE};
-cvar_t vr_menu_distance = {"vr_menu_distance", "76", CVAR_ARCHIVE};
+cvar_t vr_menu_scale = {"vr_menu_scale", "0.15", CVAR_ARCHIVE};
+cvar_t vr_menu_distance = {"vr_menu_distance", "80", CVAR_ARCHIVE};
 cvar_t vr_hud_enabled = {"vr_hud_enabled", "1", CVAR_ARCHIVE};
 
 static vec3_t xr_hud_last_pos;
