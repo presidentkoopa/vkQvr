@@ -199,6 +199,7 @@ void VR_XR_UpdateLaser (void);
 void VR_XR_AutosaveTick (void);
 void VR_XR_DebugPrints (void);
 qboolean VR_XR_HolsterSpot (int hotspot, vec3_t out);
+float VR_XR_BodyYaw (void);
 qboolean VR_XR_HandDebug (int hand, vec3_t out_pos, vec3_t out_angles);
 
 extern cvar_t vr_gun_offset_x;

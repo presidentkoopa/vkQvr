@@ -47,6 +47,7 @@ static void VR_XR_Recenter_f (void);
 static void VR_XR_ScaleDump_f (void);
 static void VR_XR_BodyDump_f (void);
 static float XR_CrouchRatio (void);
+float VR_XR_BodyYaw (void);
 
 // Finger tracking cvars, declared here because VR_XR_Init registers them well
 // before the finger-tracking section defines them. Defaults are quakevr's
@@ -4632,6 +4633,105 @@ quakevr's VR_GetCrouchRatio: calibrated standing height over current head
 height, minus one.
 ===============
 */
+/*
+===============
+VR_XR_BodyYaw
+
+Which way the player's body is facing, as against which way they are looking.
+
+The head alone is a poor answer: turn to look over your shoulder and your hips
+have not moved. quakevr blends the head direction with where the hands are
+(VR_GetBodyYawAngleCalculations, vr.cpp), on the reasoning that hands held out
+in front follow the torso even while the head turns away.
+
+Its chain, followed exactly:
+
+  - head yaw, but blended toward the head's up axis past 50 degrees of pitch,
+    so looking straight up or down does not make the yaw meaningless
+  - a body origin 10 units behind the player along that facing, with left and
+    right shoulders 6.5 units either side
+  - each hand's offset from its own shoulder, flattened to the horizontal
+  - the mean of the two, scaled down by 10, and clamped to 0.1 if it points
+    behind the head, so hands drawn back cannot spin the body round
+  - 80 percent of the way from head direction toward that hand direction
+
+Everything before this used the view yaw, which is the head plus stick turning
+and is not the body at all.
+===============
+*/
+float VR_XR_BodyYaw (void)
+{
+	vec3_t	 head_ang, head_fwd, head_right, head_up;
+	vec3_t	 origin, left_sh, right_sh, diff[2], mix, final_dir;
+	float	 eye_pitch, head_yaw, len, dot;
+	int		 i;
+
+	if (!VR_XR_SessionRunning () || !xr_head_pos_valid)
+		return cl.viewangles[YAW];
+	if (cl.viewentity <= 0 || cl.viewentity >= cl.max_edicts || !cl.entities)
+		return cl.viewangles[YAW];
+
+	// Head yaw, blended toward the up axis at steep pitch. Looking straight
+	// down, yaw about the view axis says nothing about which way you face, so
+	// quakevr leans on the head's up vector instead as pitch passes 50 degrees.
+	eye_pitch = r_refdef.viewangles[PITCH];
+	head_yaw = cl.viewangles[YAW];
+
+	if (eye_pitch < -50.0f || eye_pitch > 50.0f)
+	{
+		vec3_t view_ang, v_fwd, v_right, v_up, dir;
+		const float factor = fabsf (eye_pitch) / 90.0f;
+		const float sign = (eye_pitch > 0.0f) ? 1.0f : -1.0f;
+
+		VectorCopy (r_refdef.viewangles, view_ang);
+		AngleVectors (view_ang, v_fwd, v_right, v_up);
+
+		for (i = 0; i < 3; i++)
+			dir[i] = v_fwd[i] + ((sign * v_up[i]) - v_fwd[i]) * factor;
+
+		if (dir[0] != 0.0f || dir[1] != 0.0f)
+			head_yaw = RAD2DEG (atan2f (dir[1], dir[0]));
+	}
+
+	head_ang[PITCH] = 0.0f;
+	head_ang[YAW] = head_yaw;
+	head_ang[ROLL] = 0.0f;
+	AngleVectors (head_ang, head_fwd, head_right, head_up);
+
+	// body origin behind the player, with a shoulder either side of it
+	VectorMA (cl.entities[cl.viewentity].origin, -10.0f, head_fwd, origin);
+	VectorMA (origin, -6.5f, head_right, left_sh);
+	VectorMA (origin, 6.5f, head_right, right_sh);
+
+	// each hand relative to its own shoulder, flattened
+	for (i = 0; i < 2; i++)
+	{
+		vec3_t hand, ang, vel;
+		const float *sh = (i == 0) ? left_sh : right_sh;
+
+		XR_HandToWorld (&vr_xr_hand[i], cl.entities[cl.viewentity].origin, hand, ang, vel);
+		hand[2] = sh[2];
+		VectorSubtract (hand, sh, diff[i]);
+	}
+
+	for (i = 0; i < 3; i++)
+		mix[i] = (diff[0][i] + diff[1][i]) * 0.5f / 10.0f;
+
+	// hands drawn behind the head must not be able to spin the body round
+	dot = DotProduct (mix, head_fwd);
+	len = VectorLength (mix);
+	if (dot < 0.0f && len > 0.1f)
+		VectorScale (mix, 0.1f / len, mix);
+
+	for (i = 0; i < 3; i++)
+		final_dir[i] = head_fwd[i] + (mix[i] - head_fwd[i]) * 0.8f;
+
+	if (final_dir[0] == 0.0f && final_dir[1] == 0.0f)
+		return head_yaw;
+
+	return RAD2DEG (atan2f (final_dir[1], final_dir[0]));
+}
+
 static float XR_CrouchRatio (void)
 {
 	float curr;
@@ -4675,7 +4775,7 @@ static void XR_BodyAnchor (const vec3_t player_origin, float ox, float oy, float
 	// quakevr blends head and hand direction for body yaw; the view yaw stands
 	// in for that until VR_GetBodyYawAngle is ported.
 	ang[PITCH] = height_ratio * -35.0f;
-	ang[YAW] = cl.viewangles[YAW];
+	ang[YAW] = VR_XR_BodyYaw ();
 	ang[ROLL] = 0.0f;
 	AngleVectors (ang, fwd, right, up);
 
@@ -4703,7 +4803,7 @@ static void XR_HolsterCrouchAdjust (float mult, vec3_t out)
 	vec3_t		ang, fwd, right, up;
 
 	ang[PITCH] = 0.0f;
-	ang[YAW] = cl.viewangles[YAW];
+	ang[YAW] = VR_XR_BodyYaw ();
 	ang[ROLL] = 0.0f;
 	AngleVectors (ang, fwd, right, up);
 
@@ -5139,7 +5239,7 @@ static void XR_SetupHolsterSlots (void)
 
 		VectorCopy (spot, e->origin);
 		e->angles[PITCH] = pitches[i];
-		e->angles[YAW] = cl.viewangles[YAW] + yaw_offsets[i];
+		e->angles[YAW] = VR_XR_BodyYaw () + yaw_offsets[i];
 		e->angles[ROLL] = 0.0f;
 
 		e->model = Mod_ForName ("progs/legholster.mdl", false);
@@ -5361,7 +5461,7 @@ void VR_XR_SetupBodyEntities (void)
 	}
 
 	yaw_only[PITCH] = 0.0f;
-	yaw_only[YAW] = cl.viewangles[YAW];
+	yaw_only[YAW] = VR_XR_BodyYaw ();
 	yaw_only[ROLL] = 0.0f;
 	AngleVectors (yaw_only, fwd, right, up);
 
@@ -5371,7 +5471,7 @@ void VR_XR_SetupBodyEntities (void)
 	// over (view.cpp:1233, 1244), so it follows the body through a crouch
 	// instead of staying bolt upright.
 	cl.vrtorso.angles[PITCH] = vr_vrtorso_pitch.value - (torso_crouch * 35.0f);
-	cl.vrtorso.angles[YAW] = cl.viewangles[YAW] + vr_vrtorso_yaw.value;
+	cl.vrtorso.angles[YAW] = VR_XR_BodyYaw () + vr_vrtorso_yaw.value;
 	cl.vrtorso.angles[ROLL] = vr_vrtorso_roll.value;
 
 	cl.vrtorso.model = Mod_ForName ("progs/vrtorso.mdl", false);
