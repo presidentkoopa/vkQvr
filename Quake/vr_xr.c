@@ -159,6 +159,85 @@ cvar_t vr_2h_virtual_stock_factor = {"vr_2h_virtual_stock_factor", "0.5", CVAR_A
 cvar_t vr_virtual_stock_thresh = {"vr_virtual_stock_thresh", "10", CVAR_ARCHIVE};
 cvar_t vr_show_virtual_stock = {"vr_show_virtual_stock", "0", CVAR_ARCHIVE};
 
+/*
+================================================================================
+
+	THE REMAINDER OF QUAKEVR'S CVARS
+
+	Defaults are quakevr's, from vr_cvars.cpp. Some of these drive code below;
+	the rest exist because the QuakeC and the menus look them up by name, and a
+	name that does not resolve reads as 0 rather than as its default -- which is
+	how force grab and half a dozen other features sat dead earlier.
+
+================================================================================
+*/
+
+// aiming and movement modes. 6 is quakevr's controller-aiming default.
+cvar_t vr_aimmode = {"vr_aimmode", "6", CVAR_ARCHIVE};
+cvar_t vr_movement_mode = {"vr_movement_mode", "0", CVAR_ARCHIVE};
+
+// room-scale jumping: rise fast enough, from high enough, and the player jumps
+cvar_t vr_roomscale_jump = {"vr_roomscale_jump", "1", CVAR_ARCHIVE};
+cvar_t vr_roomscale_jump_threshold = {"vr_roomscale_jump_threshold", "1.0", CVAR_ARCHIVE};
+cvar_t vr_roomscale_move_mult = {"vr_roomscale_move_mult", "1.0", CVAR_ARCHIVE};
+
+// throwing. 0 uses the averaged hand velocity, 1 adds the spin of the wrist.
+cvar_t vr_throw_algorithm = {"vr_throw_algorithm", "0", CVAR_ARCHIVE};
+cvar_t vr_throw_up_center_of_mass = {"vr_throw_up_center_of_mass", "0.1", CVAR_ARCHIVE};
+
+// the off hand can be angled differently from the main one
+cvar_t vr_offhandpitch = {"vr_offhandpitch", "0.0", CVAR_ARCHIVE};
+cvar_t vr_offhandyaw = {"vr_offhandyaw", "0.0", CVAR_ARCHIVE};
+
+// comfort and input
+cvar_t vr_viewkick = {"vr_viewkick", "0", CVAR_NONE};
+cvar_t vr_disablehaptics = {"vr_disablehaptics", "0", CVAR_ARCHIVE};
+cvar_t vr_enable_joystick_turn = {"vr_enable_joystick_turn", "1", CVAR_ARCHIVE};
+cvar_t vr_player_shadows = {"vr_player_shadows", "2", CVAR_ARCHIVE};
+cvar_t vr_msaa = {"vr_msaa", "4", CVAR_ARCHIVE};
+cvar_t vr_novrinit = {"vr_novrinit", "0", CVAR_NONE};
+cvar_t vr_fakevr_handroll = {"vr_fakevr_handroll", "0", CVAR_NONE};
+
+// world-space HUD and status bar
+cvar_t vr_hud_scale = {"vr_hud_scale", "0.025", CVAR_ARCHIVE};
+cvar_t vr_sbar_mode = {"vr_sbar_mode", "0", CVAR_ARCHIVE};
+cvar_t vr_sbar_offset_x = {"vr_sbar_offset_x", "0", CVAR_ARCHIVE};
+cvar_t vr_sbar_offset_y = {"vr_sbar_offset_y", "0", CVAR_ARCHIVE};
+cvar_t vr_sbar_offset_z = {"vr_sbar_offset_z", "0", CVAR_ARCHIVE};
+cvar_t vr_sbar_offset_pitch = {"vr_sbar_offset_pitch", "0", CVAR_ARCHIVE};
+cvar_t vr_sbar_offset_yaw = {"vr_sbar_offset_yaw", "0", CVAR_ARCHIVE};
+cvar_t vr_sbar_offset_roll = {"vr_sbar_offset_roll", "0", CVAR_ARCHIVE};
+cvar_t vr_menumode = {"vr_menumode", "0", CVAR_ARCHIVE};
+cvar_t vr_menu_mouse_pointer_hand = {"vr_menu_mouse_pointer_hand", "1", CVAR_ARCHIVE};
+
+// crosshair
+cvar_t vr_crosshair = {"vr_crosshair", "1", CVAR_ARCHIVE};
+cvar_t vr_crosshair_depth = {"vr_crosshair_depth", "0", CVAR_ARCHIVE};
+cvar_t vr_crosshair_size = {"vr_crosshair_size", "3.0", CVAR_ARCHIVE};
+cvar_t vr_crosshair_alpha = {"vr_crosshair_alpha", "0.25", CVAR_ARCHIVE};
+cvar_t vr_crosshairy = {"vr_crosshairy", "0", CVAR_ARCHIVE};
+
+// flick reload: spin the wrist hard enough about X and the weapon reloads
+cvar_t vr_spinreload_pitch_speed = {"vr_spinreload_pitch_speed", "1100", CVAR_ARCHIVE};
+cvar_t vr_spinreload_x_angular_threshold = {"vr_spinreload_x_angular_threshold", "6.5", CVAR_ARCHIVE};
+
+// autosave
+cvar_t vr_autosave_seconds = {"vr_autosave_seconds", "240", CVAR_ARCHIVE};
+cvar_t vr_autosave_on_changelevel = {"vr_autosave_on_changelevel", "1", CVAR_ARCHIVE};
+cvar_t vr_autosave_show_message = {"vr_autosave_show_message", "0", CVAR_ARCHIVE};
+
+// debug visualisations
+cvar_t vr_show_hip_holsters = {"vr_show_hip_holsters", "0", CVAR_ARCHIVE};
+cvar_t vr_show_shoulder_holsters = {"vr_show_shoulder_holsters", "0", CVAR_ARCHIVE};
+cvar_t vr_show_upper_holsters = {"vr_show_upper_holsters", "0", CVAR_ARCHIVE};
+cvar_t vr_show_weapon_text = {"vr_show_weapon_text", "1", CVAR_ARCHIVE};
+cvar_t vr_vrtorso_debuglines_enabled = {"vr_vrtorso_debuglines_enabled", "0", CVAR_ARCHIVE};
+cvar_t vr_debug_print_handvel = {"vr_debug_print_handvel", "0", CVAR_ARCHIVE};
+cvar_t vr_debug_print_headvel = {"vr_debug_print_headvel", "0", CVAR_ARCHIVE};
+cvar_t vr_debug_show_hand_pos_and_rot = {"vr_debug_show_hand_pos_and_rot", "0", CVAR_ARCHIVE};
+
+cvar_t vr_activestartpaknameidx = {"vr_activestartpaknameidx", "0", CVAR_ARCHIVE};
+
 cvar_t vr_gunroll = {"vr_gunroll", "0", CVAR_ARCHIVE};
 cvar_t vr_gun_z_offset = {"vr_gun_z_offset", "0", CVAR_ARCHIVE};
 /*
@@ -495,6 +574,51 @@ void VR_XR_Init (void)
 	Cvar_RegisterVariable (&vr_hand_scale);
 	Cvar_RegisterVariable (&vr_gunangle);
 	Cvar_RegisterVariable (&vr_gunyaw);
+	Cvar_RegisterVariable (&vr_aimmode);
+	Cvar_RegisterVariable (&vr_movement_mode);
+	Cvar_RegisterVariable (&vr_roomscale_jump);
+	Cvar_RegisterVariable (&vr_roomscale_jump_threshold);
+	Cvar_RegisterVariable (&vr_roomscale_move_mult);
+	Cvar_RegisterVariable (&vr_throw_algorithm);
+	Cvar_RegisterVariable (&vr_throw_up_center_of_mass);
+	Cvar_RegisterVariable (&vr_offhandpitch);
+	Cvar_RegisterVariable (&vr_offhandyaw);
+	Cvar_RegisterVariable (&vr_viewkick);
+	Cvar_RegisterVariable (&vr_disablehaptics);
+	Cvar_RegisterVariable (&vr_enable_joystick_turn);
+	Cvar_RegisterVariable (&vr_player_shadows);
+	Cvar_RegisterVariable (&vr_msaa);
+	Cvar_RegisterVariable (&vr_novrinit);
+	Cvar_RegisterVariable (&vr_fakevr_handroll);
+	Cvar_RegisterVariable (&vr_hud_scale);
+	Cvar_RegisterVariable (&vr_sbar_mode);
+	Cvar_RegisterVariable (&vr_sbar_offset_x);
+	Cvar_RegisterVariable (&vr_sbar_offset_y);
+	Cvar_RegisterVariable (&vr_sbar_offset_z);
+	Cvar_RegisterVariable (&vr_sbar_offset_pitch);
+	Cvar_RegisterVariable (&vr_sbar_offset_yaw);
+	Cvar_RegisterVariable (&vr_sbar_offset_roll);
+	Cvar_RegisterVariable (&vr_menumode);
+	Cvar_RegisterVariable (&vr_menu_mouse_pointer_hand);
+	Cvar_RegisterVariable (&vr_crosshair);
+	Cvar_RegisterVariable (&vr_crosshair_depth);
+	Cvar_RegisterVariable (&vr_crosshair_size);
+	Cvar_RegisterVariable (&vr_crosshair_alpha);
+	Cvar_RegisterVariable (&vr_crosshairy);
+	Cvar_RegisterVariable (&vr_spinreload_pitch_speed);
+	Cvar_RegisterVariable (&vr_spinreload_x_angular_threshold);
+	Cvar_RegisterVariable (&vr_autosave_seconds);
+	Cvar_RegisterVariable (&vr_autosave_on_changelevel);
+	Cvar_RegisterVariable (&vr_autosave_show_message);
+	Cvar_RegisterVariable (&vr_show_hip_holsters);
+	Cvar_RegisterVariable (&vr_show_shoulder_holsters);
+	Cvar_RegisterVariable (&vr_show_upper_holsters);
+	Cvar_RegisterVariable (&vr_show_weapon_text);
+	Cvar_RegisterVariable (&vr_vrtorso_debuglines_enabled);
+	Cvar_RegisterVariable (&vr_debug_print_handvel);
+	Cvar_RegisterVariable (&vr_debug_print_headvel);
+	Cvar_RegisterVariable (&vr_debug_show_hand_pos_and_rot);
+	Cvar_RegisterVariable (&vr_activestartpaknameidx);
 	Cvar_RegisterVariable (&vr_gunroll);
 	Cvar_RegisterVariable (&vr_gun_z_offset);
 
@@ -867,6 +991,11 @@ qboolean VR_XR_CreateVulkanDevice (
 
 static XrSession	  xr_session = XR_NULL_HANDLE;
 static XrSpace		  xr_space = XR_NULL_HANDLE;
+// The head, as its own reference space. Located each frame purely for its
+// velocity, which room-scale jumping needs and xrLocateViews does not report.
+static XrSpace		  xr_view_space = XR_NULL_HANDLE;
+static vec3_t		  xr_head_velocity;
+static qboolean		  xr_head_vel_valid = false;
 static XrSessionState xr_state = XR_SESSION_STATE_UNKNOWN;
 static qboolean		  xr_session_running = false;
 
@@ -1050,8 +1179,20 @@ void VR_XR_CreateSession (VkInstance instance, VkPhysicalDevice physical_device,
 		}
 		Con_Printf ("OpenXR: using LOCAL space (no room-scale stage)\n");
 	}
-	else
-		Con_Printf ("OpenXR: using STAGE space (room-scale)\n");
+
+
+
+	// A VIEW-type reference space, so the head can be located with velocity.
+	// Failure is not fatal: it only costs room-scale jumping.
+	{
+		XrReferenceSpaceCreateInfo view_info;
+		memset (&view_info, 0, sizeof (view_info));
+		view_info.type = XR_TYPE_REFERENCE_SPACE_CREATE_INFO;
+		view_info.referenceSpaceType = XR_REFERENCE_SPACE_TYPE_VIEW;
+		view_info.poseInReferenceSpace.orientation.w = 1.0f;
+		if (XR_FAILED (xrCreateReferenceSpace (xr_session, &view_info, &xr_view_space)))
+			xr_view_space = XR_NULL_HANDLE;
+	}
 
 	xr_swapchain_format = XR_ChooseSwapchainFormat ();
 	if (!xr_swapchain_format)
@@ -2536,6 +2677,15 @@ void VR_XR_SyncInput (void)
 
 	if (XR_FAILED (xrSyncActions (xr_session, &sync)))
 		return;
+	// the head's own velocity, which room-scale jumping reads
+	if (xr_view_space != XR_NULL_HANDLE)
+	{
+		vec3_t hp, ha;
+		xr_head_vel_valid = XR_LocateHand (xr_view_space, xr_frame_state.predictedDisplayTime, hp, ha, xr_head_velocity);
+	}
+	else
+		xr_head_vel_valid = false;
+
 
 	for (hand = 0; hand < VR_HANDS; hand++)
 	{
@@ -3222,6 +3372,13 @@ qboolean VR_XR_WeaponPose (const vec3_t player_origin, vec3_t out_origin, vec3_t
 	out_angles[YAW] += vr_gunyaw.value;
 	out_angles[ROLL] += vr_gunroll.value;
 
+	// the off hand can be angled apart from the main one (quakevr vr.cpp:3141)
+	if (h == &vr_xr_hand[VR_XR_OffHand ()])
+	{
+		out_angles[PITCH] += vr_offhandpitch.value;
+		out_angles[YAW] += vr_offhandyaw.value;
+	}
+
 	// Keep the barrel out of walls before the pitch is flipped for drawing,
 	// since the collision sweep needs a real direction.
 	VR_XR_ResolveGunCollision (out_origin, out_angles, 24.0f);
@@ -3435,6 +3592,11 @@ void VR_XR_AdjustAngles (void)
 	if (!xr_input_ready || !VR_XR_SessionRunning ())
 		return;
 
+	// quakevr gates stick turning behind this so a player can commit to real
+	// turning without the stick fighting them (vr.cpp:4632)
+	if (vr_enable_joystick_turn.value != 1)
+		return;
+
 	x = XR_ApplyDeadzone (vr_xr_hand[VR_HAND_RIGHT].stick[0]);
 
 	if (vr_snap_turn.value > 0.0f)
@@ -3553,6 +3715,25 @@ unsigned int VR_XR_Buttons (void)
 		bits |= 1; // attack
 	if (vr_xr_hand[VR_HAND_RIGHT].btn_a || vr_xr_hand[VR_HAND_LEFT].btn_a)
 		bits |= 2; // jump
+
+	// Room-scale jump: physically jump and the player jumps.
+	//
+	// quakevr gates it on both the head rising fast enough and the head being
+	// above the calibrated standing height (vr.cpp:4173-4175), so that standing
+	// up out of a crouch does not read as a jump. The velocity is in metres per
+	// second, straight from the runtime, which is what the threshold is in.
+	if (vr_roomscale_jump.value && xr_head_vel_valid)
+	{
+		// Both sides in metres. XR_LocateHand scales velocity into Quake units
+		// on the way out, and the stored head height carries vr_floor_offset,
+		// so both are converted back -- vr_height_calibration is a real
+		// standing height in metres and means nothing in Quake units.
+		const float rise = xr_head_velocity[2] / VR_METERS_TO_UNITS;
+		const float height = (xr_last_head_pos[2] - vr_floor_offset.value) / VR_METERS_TO_UNITS;
+		if (rise > vr_roomscale_jump_threshold.value && height > vr_height_calibration.value)
+			bits |= 2;
+	}
+
 
 	if (vr_haptics.value)
 	{
@@ -3712,6 +3893,47 @@ Rotates a play-space velocity into the world by the player's body yaw. Position
 needs the extra offset work; a velocity only needs the rotation.
 ===============
 */
+/*
+===============
+XR_ThrowVelocity
+
+quakevr has two ways of working out how fast something leaves the hand
+(vr.cpp:1984-2010).
+
+Algorithm 0 uses the averaged hand velocity, which is what a straight push
+gives. Algorithm 1 adds the wrist's spin: an object held a little above the
+palm is carried by rotation as well as by translation, so the angular velocity
+crossed with that offset contributes. It is the difference between shoving a
+grenade and flicking one.
+===============
+*/
+static void XR_ThrowVelocity (int hand, vec3_t out)
+{
+	const vr_hand_t *h = &vr_xr_hand[hand];
+	vec3_t			 fwd, right, up, obj_offset, spin;
+
+	VectorCopy (h->throw_velocity, out);
+
+	if ((int)vr_throw_algorithm.value != 1)
+		return;
+
+	// where the thrown thing sits relative to the palm, up from it
+	{
+		vec3_t ang;
+		VectorCopy (h->aim_angles, ang);
+		AngleVectors (ang, fwd, right, up);
+	}
+	VectorNormalize (up);
+	VectorScale (up, vr_throw_up_center_of_mass.value, obj_offset);
+
+	{
+		vec3_t avel;
+		VectorCopy (h->angular_velocity, avel);
+		CrossProduct (avel, obj_offset, spin);
+	}
+	VectorAdd (out, spin, out);
+}
+
 static void XR_HandVelToWorld (const vr_hand_t *h, const vec3_t in, vec3_t out)
 {
 	const float yaw = DEG2RAD (cl.viewangles[YAW]);
@@ -3789,7 +4011,9 @@ void VR_XR_WriteEdictFields (edict_t *ed)
 	{
 		// averaged, then scaled -- the release frame alone under-reads a throw
 		vec3_t tv;
-		XR_HandVelToWorld (&vr_xr_hand[main_hand], vr_xr_hand[main_hand].throw_velocity, tv);
+		vec3_t rawtv;
+		XR_ThrowVelocity (main_hand, rawtv);
+		XR_HandVelToWorld (&vr_xr_hand[main_hand], rawtv, tv);
 		VectorScale (tv, vr_weapon_throw_velocity_mult.value, tv);
 		XR_SetVector (ed, f->handthrowvel, tv);
 	}
@@ -4914,6 +5138,10 @@ VR_XR_Haptic
 */
 void VR_XR_Haptic (int hand, float duration, float frequency, float amplitude)
 {
+	// quakevr checks this before every pulse (vr.cpp:3901)
+	if (vr_disablehaptics.value == 1)
+		return;
+
 	XrHapticActionInfo info;
 	XrHapticVibration  vibration;
 
