@@ -1,114 +1,130 @@
-# quakevr → vkQuake port status
+# quakevr → vkQuake port: state and handover
 
-Source of truth: `E:\quakevr` (vittorioromeo/quakevr). Every value and formula is
-ported from it, never derived — except where noted below, where quakevr has no
-answer to give.
+Source of truth is `E:\quakevr`, and **both halves of it matter**: the C++ under
+`Quake/`, and `ReleaseFiles/Id1/config.cfg`, which is the author's shipped,
+tuned configuration. Most of the real numbers live in the config, not the code.
+The code defaults are nothing like what quakevr actually ships.
 
-**Cvar parity: 178 of 178.** Verified by diffing every `DEFINE_*CVAR*` in
-quakevr's `vr_cvars.cpp` against every `cvar_t` here.
+## Measuring coverage
 
-**Builtin parity: 27 of 32.** All quakevr builtins implemented except the five
-`worldtext_*`.
+Do not trust prose about coverage, including this file's. Run:
 
-Legend: **[x]** done · **[~]** partial · **[ ]** not started
+    sh tools/portcheck.sh
 
----
+It counts from both source trees every time, so it cannot drift. Earlier
+versions of this document claimed "50 of 76 done" while grab, reload and
+off-hand attack did not exist at all.
 
-## A. Engine foundation
+Current output: cvars OK, builtins OK, QC fields OK, commands 17 missing (all
+vkQuake-vs-QuakeSpasm engine differences — `fitztest`, `gl_info`, `hunk_print` —
+plus `voip`), stats 46 missing.
 
-- [x] OpenXR instance, system, session, state machine
-- [x] Vulkan via `XR_KHR_vulkan_enable2` on the headset's GPU
-- [x] Room-scale STAGE reference space (LOCAL fallback), plus a VIEW space for head velocity
-- [x] Per-eye swapchains, compositor frame pacing, true stereo
-- [x] Asymmetric per-eye projection, widened cull frustum
-- [x] Multithreaded-safe — all `xr*` on the main thread
-- [x] UNORM swapchain, neutral gamma/contrast
-- [ ] `VK_KHR_multiview` — one pass instead of two, roughly halves GPU cost
-- [ ] Offscreen render target at full eye resolution (currently window-sized)
+The 46 stats are quakevr's transport for holster contents. They are deliberately
+**not** ported: the same data is read straight off the server edict through
+`QCEXTFIELD`, which works on a listen server and avoids a protocol change that
+would break ordinary clients. Revisit only if dedicated-server VR is wanted.
 
-## B. Tracking and view
+## What is done
 
-- [x] Head pose → view, no `STAT_VIEWHEIGHT`, no bob
-- [x] `{-z,-x,y}` conversion, `meters_to_units` = `world_scale/(1.5*0.0254)`
-- [x] `vr_floor_offset` −16, applied once
-- [x] Room-scale movement — head XY discarded from the camera; cannot drift
-- [x] Room-scale jump, gated on rise speed and calibrated standing height
-- [x] Snap and smooth turn, deadzone, `vr_enable_joystick_turn`
-- [ ] `VR_GetBodyYawAngle` — blended head/hand body yaw
-- [ ] `VR_GetCrouchRatio` / crouch-aware anchors
-- [ ] `VR_PushYaw` on `svc_setview` and teleport
+Foundation: OpenXR session, per-eye stereo at the headset's native resolution,
+asymmetric projection, room-scale, the full QuakeC bridge at **stock CRC 5927**.
 
-## C. Controllers and hands
+Parity: 178/178 global cvars, 32/32 builtins, 2112 per-weapon cvars
+(`vr_wofs_<field>_<nn>`, 66 fields × 32 slots) so quakevr's config binds
+directly and any weapon is tunable live.
 
-- [x] Action set; Touch, Index and generic profiles
-- [x] Grip + aim poses, trigger, grip, sticks, buttons, velocity
-- [x] Throw velocity averaging, and both throw algorithms
-- [x] Haptics, `#81` builtin, `vr_disablehaptics`
-- [x] Finger tracking via `XR_EXT_hand_tracking`, falling back to grip
-- [x] Hand assembly — `hand_base.mdl` plus five fingers, 27 offset cvars
-- [x] Off hand mirrored on Y (own no-cull pipeline; Vulkan bakes winding in)
-- [x] Hand scale — quakevr has none, derived from its own sizing rule
-- [x] Off-hand angle offsets
-- [ ] Weapon-mounted buttons (`VR_DoWpnButton`)
+Body and weapons: hand on the controller, weapon seated so its grip lands in the
+hand, uniform hand scaling, holsters drawn with their contents, weapon-mounted
+buttons, two-handed aiming with virtual stock, weapon weight, flick reload.
 
-## D. Weapon
+Input: grab, reload, flick reload, off-hand attack, `+button3`–`8`. Controller
+inputs are OR-ed with the bound commands, so both paths work.
 
-- [x] Viewmodel at the hand — position from grip, orientation from aim
-- [x] Per-weapon offset and scale table, id1/hipnotic/rogue + Arcane Dimensions
-- [x] `VR_ApplyModelMod` + `VR_GetScaleCorrect`, applied to body models too
-- [x] Frame correction (`vr_gunangle` −30, `vr_gunyaw`, `vr_gunroll`) on models *and* shot
-- [x] Model-only pitch (`vr_gunmodelpitch`)
-- [x] `original_scale` snapshot for MDL, MD5, MD3
-- [x] Hand grips the weapon — anchored to the mesh, not the controller
-- [x] Gun wall collisions
-- [x] Weapon weight simulation, position and direction
-- [x] Two-handed aiming with virtual stock, eased transitions
-- [x] Flick reload
-- [ ] Ironsights
+## The lesson that cost the most time
 
-## E. Gameplay (QuakeC bridge)
+**quakevr's numbers come in matched sets.** Its per-part offsets compensate for
+its own non-uniform model scaling and its own anchor vertices. Importing any one
+without the machinery it corrects for makes things worse, every time — the palm
+five units off, the fingers five units back, the weapon two units sideways.
 
-- [x] quakevr's full QC compiles and loads — **CRC 5927**, mods still work
-- [x] 68 VR fields via `QCEXTFIELD`, 27 builtins at their exact numbers
-- [x] Hand-touch pickup, holster hotspots, `vrbits0`, teleport
-- [x] Force grab, melee, headbutt, drops, positional damage, holster/reload/cycle modes
-- [x] `vr_enabled` driven from real session state
-- [ ] Holsters persisting across level change (needs spawnparm extension)
-- [ ] `VR_OnSpawnServer` / `VR_OnClientClearState` lifecycle hooks
+Where this port scales uniformly and lets models place themselves, those offsets
+are zeroed on purpose. Do not "restore" them to quakevr's values without also
+restoring quakevr's scaling rule.
 
-## F. Models and presentation
+## Numbers that are ours, not quakevr's
 
-- [x] quakevr asset paks, torso, leg holsters, hands, fingers
-- [x] VR HUD on a world-space panel, with all six placement offsets
-- [x] World-space crosshair — point, line and faded-line modes
-- [x] Holster, hand-axis and velocity debug visualisations
-- [~] VR menu — on the HUD panel; virtual keyboard not ported
-- [ ] World text (`worldtext_*` builtins, five of them)
+Everything else is lifted. These four are not, and each is commented in place:
 
-## G. Comfort and misc
+- `vr_gunangle -30` — measured on this hardware. quakevr's 39.5 is against
+  OpenVR's controller pose; this uses OpenXR's aim pose.
+- `vr_vrtorso_z_offset -51` — quakevr's -45 suits its author's 1.646 m
+  calibration; the `head_z_mult` term scales with height.
+- `vr_fingers_and_base_x 2` — a forward nudge, dialled by eye.
+- `vr_wpn_autoscale 26` — derived from what quakevr's own table produces for
+  `v_shot` (40.1 units → 26.7).
 
-- [x] Rotating autosave, twelve slots
-- [ ] `vr_autosave_on_changelevel` — registered, needs a hook in the level change
-- [ ] `vr_hud_scale` — registered but not wired; the panel uses `vr_menu_scale`,
-      which is what has actually been verified in the headset
-- [ ] `vr_player_shadows`, `vr_msaa`, `vr_movement_mode`, `vr_aimmode`,
-      `vr_menumode` — registered, behaviour not implemented
-- [ ] Flatscreen mode (`vr_fakevr`) — deliberately deferred
+## Mod compatibility
 
----
+The split that governs everything: **engine-side VR works with any progs.dat;
+QC-side VR needs the VR progs.**
 
-## Derived rather than ported
+Engine-side, and therefore always available: stereo rendering, head tracking,
+hands drawn and tracked, weapon held in the hand and auto-scaled, room-scale
+movement, snap/smooth turn, weapon aiming and firing along the controller.
 
-Two numbers here are not quakevr's, because quakevr has none to give. Both are
-derived from its own rules rather than picked to look right:
+QC-side, and therefore only with `vrqc`: storing weapons in holsters, force
+grab, melee damage, headbutting, positional damage, hand-touch pickup, throwing.
 
-- **`vr_hand_scale` 0.38.** quakevr never scales `hand_base.mdl`; it registers
-  only `hand.mdl` at scale 0 to hide the weapon placeholder. Its weapon table
-  brings models to true size at 26.25 units/metre — `v_shot.mdl` is 40.1 units
-  and `0.5 × 1.333` takes it to 1.02 m, a real shotgun. The same rule on a
-  13.1-unit hand model wants about 5 units.
-- **The grip anchor.** `HandAnchorVertex` defaults to 0 for every weapon and no
-  call overrides it, and vertex 0 is not a grip in either engine — quakevr
-  indexes post-dedup VBO order, this indexes raw MDL order. quakevr's real values
-  were dialled through its runtime menu and live in a config. So the grip is found
-  geometrically: the rearmost fifth of the model by length, lower half, averaged.
+So a mod with its own `progs.dat` — Arcane Dimensions, Team Fortress, most
+large mods — will run and be playable in VR, with the weapon in your hand at a
+sane size, but without the holster/grab layer. CRC 5927 is what makes them load
+at all; do not let it drift.
+
+Arcane Dimensions specifically: its weapon set is recognised by name in the AD
+branch of the per-weapon cvars, so its weapons get real numbers rather than
+autoscale. Its own progs replaces the VR QC.
+
+Team Fortress: expected to load, but it is QuakeWorld-oriented and
+multiplayer-first, so treat it as untested. Nothing about it is known to be
+incompatible.
+
+## Adding a weapon
+
+Nothing is required. An unrecognised `progs/v_*.mdl` is auto-scaled to
+`vr_wpn_autoscale` on its longest axis and seated by a mesh search for its grip.
+
+To tune one, find its slot with `vr_scaledump` and set the cvars live:
+
+    vr_wofs_scale_02 0.6      // size
+    vr_wofs_z_02 12           // along the model's own axes
+    vr_wofs_id_07 progs/v_mymod.mdl   // claim an unused slot for a mod weapon
+
+Slots are numbered from 01. `vr_grip_vertex` pins a specific grip vertex if the
+mesh search picks badly.
+
+## Multiplayer — untested, design notes only
+
+Nothing here has been run against a second player. What is known from the code:
+
+VR state is client-side. Poses, hands and the drawn body never leave the client,
+so a VR player joining a desktop server should work, with the VR player getting
+the engine-side features above.
+
+The QC-side features need the **server** running the VR progs. A desktop player
+on a VR server is fine — they simply never set the VR fields.
+
+The holster data is read from the server edict directly rather than sent as
+stats. That is correct on a listen server and **wrong for a dedicated server**,
+where the client has no edict to read. Porting the 46 stats is the fix, and is
+the one place the shortcut has a real cost.
+
+## Suggested next work
+
+1. **Polish/QoL**: crosshair is off by default (`vr_crosshair 3` for the faded
+   line); no virtual keyboard, so the console needs a real one; `vr_hud_scale`
+   is registered but unwired — the panel uses `vr_menu_scale`.
+2. **`VK_KHR_multiview`** — one pass instead of two, roughly halves GPU cost.
+   Worth more now that rendering is at native eye resolution.
+3. **World text renderer** — the five builtins store their data but draw
+   nothing; needs a textured world-space pipeline.
+4. **The 46 stats**, if dedicated-server or true multiplayer VR is wanted.
