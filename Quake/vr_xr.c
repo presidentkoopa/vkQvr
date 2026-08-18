@@ -45,6 +45,7 @@ static int	XR_ComputeHotSpot (const vec3_t hand_world, const vec3_t player_origi
 static void VR_XR_Calibrate_f (void);
 static void VR_XR_Recenter_f (void);
 static void VR_XR_ScaleDump_f (void);
+void VR_RegisterWeaponCVars (void);
 static void VR_XR_BodyDump_f (void);
 static float XR_CrouchRatio (void);
 static void XR_HandToWorld (const vr_hand_t *h, const vec3_t player_origin, vec3_t out_pos, vec3_t out_angles, vec3_t out_vel);
@@ -725,6 +726,8 @@ void VR_XR_Init (void)
 	Cvar_RegisterVariable (&vr_verbosebots);
 
 	Cmd_AddCommand ("vr_recenter", VR_XR_Recenter_f);
+	VR_RegisterWeaponCVars ();
+
 	Cmd_AddCommand ("vr_scaledump", VR_XR_ScaleDump_f);
 	Cmd_AddCommand ("vr_bodydump", VR_XR_BodyDump_f);
 
@@ -3022,42 +3025,239 @@ static float VR_XR_GetScaleCorrect (void)
 	return (vr_world_scale.value / 0.75f) * vr_gunmodelscale.value;
 }
 
-// vanilla Quake, Scourge of Armagon, Dissolution of Eternity
-static const vr_wpn_offset_t vr_wpn_offsets_id1[] = {
-	{"progs/v_axe.mdl", -4.0f, 24.0f, 37.0f, 0.33f, 2, 3.4f, 0.0f, 3.6f},
-	{"progs/v_shot.mdl", 1.5f, 1.0f, 10.0f, 0.5f, 165, 2.4f, 0.2f, 0.7f},		 // gun
-	{"progs/v_shot2.mdl", -3.5f, 1.0f, 8.5f, 0.8f, 65, -3.25f, 1.1f, 1.25f},		 // shotgun
-	{"progs/v_nail.mdl", -5.0f, 3.0f, 15.0f, 0.5f, 5, 0.8f, -1.3f, 0.1f},		 // nailgun
-	{"progs/v_nail2.mdl", 0.0f, 3.0f, 19.0f, 0.5f, 28, -0.8f, 0.2f, 2.6f},		 // supernailgun
-	{"progs/v_rock.mdl", 10.0f, 1.5f, 13.0f, 0.5f, 33, 0.4f, -1.5f, 2.0f},		 // grenade
-	{"progs/v_rock2.mdl", 10.0f, 7.0f, 19.0f, 0.5f, 12, 2.1f, -0.8f, 1.0f},		 // rocket
-	{"progs/v_light.mdl", 3.0f, 4.0f, 13.0f, 0.5f, 57, 2.4f, 0.7f, -1.35f},		 // lightning
-	{"progs/v_hammer.mdl", -4.0f, 18.0f, 37.0f, 0.33f, 0, 1.9f, 0.0f, 4.5f},	 // mjolnir
-	{"progs/v_laserg.mdl", 65.0f, 3.7f, 17.0f, 0.33f, 4, -16.2f, 1.9f, 10.3f},	 // laser
-	{"progs/v_prox.mdl", 10.0f, 1.5f, 13.0f, 0.5f, 33, 0.4f, -1.5f, 2.0f},		 // proximity
-	{"progs/v_lava.mdl", -5.0f, 3.0f, 15.0f, 0.5f, 5, 0.8f, -1.3f, 0.1f},		 // lava nailgun
-	{"progs/v_lava2.mdl", 0.0f, 3.0f, 19.0f, 0.5f, 44, -0.8f, 0.2f, 2.6f},		 // lava supernailgun
-	{"progs/v_multi.mdl", 10.0f, 1.5f, 13.0f, 0.5f, 33, 0.4f, -1.5f, 2.0f},		 // multigrenade
-	{"progs/v_multi2.mdl", 10.0f, 7.0f, 19.0f, 0.5f, 12, 2.1f, -0.8f, 1.0f},	 // multirocket
-	{"progs/v_plasma.mdl", 3.0f, 4.0f, 13.0f, 0.5f, 57, 2.4f, 0.7f, -1.35f},	 // plasma
-	{"progs/hand.mdl", 0.0f, 0.0f, 0.0f, 0.0f, 0, 1.7f, -4.25f, 2.0f},
-	{"progs/v_grpple.mdl", 0.0f, 0.0f, 0.0f, 0.0f, 68, 1.7f, -0.2f, 1.1f},
-};
+/*
+================================================================================
 
-// Arcane Dimensions, tuned against v1.70 + patch1
-static const vr_wpn_offset_t vr_wpn_offsets_ad[] = {
-	{"progs/v_shadaxe0.mdl", -1.5f, 43.1f, 41.0f, 0.25f, -1, 0.0f, 0.0f, 0.0f}, // shadow axe
-	{"progs/v_shadaxe3.mdl", -1.5f, 43.1f, 41.0f, 0.25f, -1, 0.0f, 0.0f, 0.0f}, // shadow axe upgrade
-	{"progs/v_shot.mdl", 1.5f, 1.7f, 17.5f, 0.33f, -1, 0.0f, 0.0f, 0.0f},		  // shotgun
-	{"progs/v_shot2.mdl", -3.5f, 0.4f, 8.5f, 0.8f, -1, 0.0f, 0.0f, 0.0f},		  // double barrel
-	{"progs/v_shot3.mdl", -3.5f, 0.4f, 8.5f, 0.8f, -1, 0.0f, 0.0f, 0.0f},		  // Widowmaker
-	{"progs/v_nail.mdl", -9.5f, 3.0f, 17.0f, 0.5f, -1, 0.0f, 0.0f, 0.0f},
-	{"progs/v_nail2.mdl", -6.0f, 3.5f, 20.0f, 0.4f, -1, 0.0f, 0.0f, 0.0f},
-	{"progs/v_rock.mdl", -3.0f, 1.25f, 17.0f, 0.5f, -1, 0.0f, 0.0f, 0.0f},
-	{"progs/v_rock2.mdl", 0.0f, 5.55f, 22.5f, 0.45f, -1, 0.0f, 0.0f, 0.0f},
-	{"progs/v_light.mdl", -4.0f, 3.1f, 13.0f, 0.5f, -1, 0.0f, 0.0f, 0.0f},
-	{"progs/v_plasma.mdl", 2.8f, 1.8f, 22.5f, 0.5f, -1, 0.0f, 0.0f, 0.0f},
-};
+	PER-WEAPON CVARS
+
+	quakevr does not hold weapon tuning in a table: every field of every weapon
+	is its own archived cvar, named vr_wofs_<field>_<nn> where nn counts from 01
+	(vr.cpp InitWeaponCVar / CopyWithNumeral). 66 fields across 32 slots, 2112
+	cvars, and its shipped config is mostly this.
+
+	Two reasons to reproduce it rather than keep a static table. Its config can
+	then be loaded as-is, values and all, instead of the handful of columns
+	transcribed by hand. And every weapon becomes tunable in the headset,
+	including mod weapons quakevr never had numbers for -- which is the case the
+	static table could never serve.
+
+	Field order here matches quakevr's WpnCVar enum, so an index means the same
+	thing in both.
+
+================================================================================
+*/
+
+#define VR_MAX_WEAPONS 32
+
+typedef enum
+{
+	WPNCV_X = 0,
+	WPNCV_Y,
+	WPNCV_Z,
+	WPNCV_SCALE,
+	WPNCV_ID,
+	WPNCV_PITCH,
+	WPNCV_ROLL,
+	WPNCV_YAW,
+	WPNCV_MUZZLE_X,
+	WPNCV_MUZZLE_Y,
+	WPNCV_MUZZLE_Z,
+	WPNCV_2H_X,
+	WPNCV_2H_Y,
+	WPNCV_2H_Z,
+	WPNCV_2H_PITCH,
+	WPNCV_2H_YAW,
+	WPNCV_2H_ROLL,
+	WPNCV_2H_MODE,
+	WPNCV_LENGTH,
+	WPNCV_WEIGHT,
+	WPNCV_HAND_X,
+	WPNCV_HAND_Y,
+	WPNCV_HAND_Z,
+	WPNCV_HAND_AV,
+	WPNCV_CH_MODE_Z,
+	WPNCV_HIDE_HAND,
+	WPNCV_2H_DISPMD,
+	WPNCV_2H_HAND_AV,
+	WPNCV_2H_FXD_OX,
+	WPNCV_2H_FXD_OY,
+	WPNCV_2H_FXD_OZ,
+	WPNCV_GUNOFF_X,
+	WPNCV_GUNOFF_Y,
+	WPNCV_GUNOFF_Z,
+	WPNCV_2H_FXD_HP,
+	WPNCV_2H_FXD_HY,
+	WPNCV_2H_FXD_HR,
+	WPNCV_2H_FXD_MH_OX,
+	WPNCV_2H_FXD_MH_OY,
+	WPNCV_2H_FXD_MH_OZ,
+	WPNCV_W_POSMULT,
+	WPNCV_W_DIRMULT,
+	WPNCV_W_HVELMULT,
+	WPNCV_W_HTVELMULT,
+	WPNCV_W_2HPOSMULT,
+	WPNCV_W_2HDIRMULT,
+	WPNCV_WPNBTNMODE,
+	WPNCV_WPNBTN_X,
+	WPNCV_WPNBTN_Y,
+	WPNCV_WPNBTN_Z,
+	WPNCV_WPNBTN_AV,
+	WPNCV_WPNBTN_PITCH,
+	WPNCV_WPNBTN_YAW,
+	WPNCV_WPNBTN_ROLL,
+	WPNCV_MUZZLE_AV,
+	WPNCV_WPNTXTMODE,
+	WPNCV_WPNTXT_X,
+	WPNCV_WPNTXT_Y,
+	WPNCV_WPNTXT_Z,
+	WPNCV_WPNTXT_PITCH,
+	WPNCV_WPNTXT_YAW,
+	WPNCV_WPNTXT_ROLL,
+	WPNCV_WPNTXT_SCALE,
+	WPNCV_WPNTXT_AV,
+	WPNCV_ZB,
+	WPNCV_ZB_2H,
+	WPNCV_COUNT
+} vr_wpncvar_t;
+
+// quakevr's field names, in enum order
+static const char *vr_wpncvar_names[WPNCV_COUNT] = {
+	"x",		  "y",		   "z",			 "scale",	   "id",		 "pitch",	   "roll",		  "yaw",		 "muzzle_x",
+	"muzzle_y",	  "muzzle_z",  "2h_x",		 "2h_y",	   "2h_z",		 "2h_pitch",   "2h_yaw",	  "2h_roll",	 "2h_mode",
+	"length",	  "weight",	   "hand_x",	 "hand_y",	   "hand_z",	 "hand_av",	   "ch_mode_z",	  "hide_hand",	 "2h_dispmd",
+	"2h_hand_av", "2h_fxd_ox", "2h_fxd_oy",	 "2h_fxd_oz",  "gunoff_x",	 "gunoff_y",   "gunoff_z",	  "2h_fxd_hp",	 "2h_fxd_hy",
+	"2h_fxd_hr",  "2h_fxd_mh_ox", "2h_fxd_mh_oy", "2h_fxd_mh_oz", "w_posmult", "w_dirmult", "w_hvelmult", "w_htvelmult", "w_2hposmult",
+	"w_2hdirmult", "wpnbtnmode", "wpnbtn_x", "wpnbtn_y",   "wpnbtn_z",	 "wpnbtn_av",  "wpnbtn_pitch", "wpnbtn_yaw",	 "wpnbtn_roll",
+	"muzzle_av",  "wpntxtmode", "wpntxt_x",	 "wpntxt_y",   "wpntxt_z",	 "wpntxt_pitch", "wpntxt_yaw", "wpntxt_roll", "wpntxt_scale",
+	"wpntxt_av",  "zb",		   "zb_2h"};
+
+static cvar_t vr_wpncvars[VR_MAX_WEAPONS][WPNCV_COUNT];
+static char	  vr_wpncvar_storage[VR_MAX_WEAPONS][WPNCV_COUNT][32];
+static char	  vr_wpncvar_namebuf[VR_MAX_WEAPONS][WPNCV_COUNT][40];
+
+/*
+===============
+VR_RegisterWeaponCVars
+
+Creates all 2112. Names are built the way quakevr builds them, with a two-digit
+suffix counting from 01, so its shipped config binds to these directly.
+
+Defaults come from its InitWeaponCVars calls: the id1 set when the game is
+anything but Arcane Dimensions, the AD set when it is, exactly as quakevr picks
+between them (vr.cpp:1024-1074). Fields those calls do not pass keep the
+defaults the function itself declares, which are 0.0 but for the six weight
+multipliers at 1.0.
+===============
+*/
+void VR_RegisterWeaponCVars (void)
+{
+	// model, x, y, z, scale -- the five InitWeaponCVars actually passes
+	static const char *id1[][5] = {
+		{"progs/v_axe.mdl", "-4", "24", "37", "0.33"},		{"progs/v_shot.mdl", "1.5", "1", "10", "0.5"},
+		{"progs/v_shot2.mdl", "-3.5", "1", "8.5", "0.8"},	{"progs/v_nail.mdl", "-5", "3", "15", "0.5"},
+		{"progs/v_nail2.mdl", "0", "3", "19", "0.5"},		{"progs/v_rock.mdl", "10", "1.5", "13", "0.5"},
+		{"progs/v_rock2.mdl", "10", "7", "19", "0.5"},		{"progs/v_light.mdl", "3", "4", "13", "0.5"},
+		{"progs/v_hammer.mdl", "-4", "18", "37", "0.33"},	{"progs/v_laserg.mdl", "65", "3.7", "17", "0.33"},
+		{"progs/v_prox.mdl", "10", "1.5", "13", "0.5"},		{"progs/v_lava.mdl", "-5", "3", "15", "0.5"},
+		{"progs/v_lava2.mdl", "0", "3", "19", "0.5"},		{"progs/v_multi.mdl", "10", "1.5", "13", "0.5"},
+		{"progs/v_multi2.mdl", "10", "7", "19", "0.5"},		{"progs/v_plasma.mdl", "3", "4", "13", "0.5"},
+		{"progs/hand.mdl", "0.0", "0.0", "0.0", "0.0"},		{"progs/v_grpple.mdl", "0.0", "0.0", "0.0", "0.0"},
+	};
+	static const char *ad[][5] = {
+		{"progs/v_shadaxe0.mdl", "-1.5", "43.1", "41", "0.25"}, {"progs/v_shadaxe3.mdl", "-1.5", "43.1", "41", "0.25"},
+		{"progs/v_shot.mdl", "1.5", "1.7", "17.5", "0.33"},		{"progs/v_shot2.mdl", "-3.5", "0.4", "8.5", "0.8"},
+		{"progs/v_shot3.mdl", "-3.5", "0.4", "8.5", "0.8"},		{"progs/v_nail.mdl", "-9.5", "3", "17", "0.5"},
+		{"progs/v_nail2.mdl", "-6", "3.5", "20", "0.4"},		{"progs/v_rock.mdl", "-3", "1.25", "17", "0.5"},
+		{"progs/v_rock2.mdl", "0", "5.55", "22.5", "0.45"},		{"progs/v_light.mdl", "-4", "3.1", "13", "0.5"},
+		{"progs/v_plasma.mdl", "2.8", "1.8", "22.5", "0.5"},	{"progs/hand.mdl", "0.0", "0.0", "0.0", "0.0"},
+		{"progs/v_grpple.mdl", "0.0", "0.0", "0.0", "0.0"},
+	};
+
+	const qboolean is_ad = !strcmp (COM_SkipPath (com_gamedir), "ad");
+	const char *(*set)[5] = is_ad ? ad : id1;
+	const int	count = is_ad ? (int)countof (ad) : (int)countof (id1);
+	int			slot, f;
+
+	for (slot = 0; slot < VR_MAX_WEAPONS; slot++)
+	{
+		for (f = 0; f < WPNCV_COUNT; f++)
+		{
+			cvar_t *c = &vr_wpncvars[slot][f];
+			char   *name = vr_wpncvar_namebuf[slot][f];
+			char   *val = vr_wpncvar_storage[slot][f];
+
+			q_snprintf (name, sizeof (vr_wpncvar_namebuf[slot][f]), "vr_wofs_%s_%02d", vr_wpncvar_names[f], slot + 1);
+
+			// quakevr's own defaults for the fields InitWeaponCVars declares
+			if (f == WPNCV_W_POSMULT || f == WPNCV_W_DIRMULT || f == WPNCV_W_HVELMULT || f == WPNCV_W_HTVELMULT || f == WPNCV_W_2HPOSMULT ||
+				f == WPNCV_W_2HDIRMULT || f == WPNCV_WPNTXT_SCALE)
+				q_strlcpy (val, "1.0", sizeof (vr_wpncvar_storage[slot][f]));
+			else if (f == WPNCV_ID)
+				q_strlcpy (val, (slot < count) ? set[slot][0] : "-1", sizeof (vr_wpncvar_storage[slot][f]));
+			else if (slot < count && f == WPNCV_X)
+				q_strlcpy (val, set[slot][1], sizeof (vr_wpncvar_storage[slot][f]));
+			else if (slot < count && f == WPNCV_Y)
+				q_strlcpy (val, set[slot][2], sizeof (vr_wpncvar_storage[slot][f]));
+			else if (slot < count && f == WPNCV_Z)
+				q_strlcpy (val, set[slot][3], sizeof (vr_wpncvar_storage[slot][f]));
+			else if (slot < count && f == WPNCV_SCALE)
+				q_strlcpy (val, set[slot][4], sizeof (vr_wpncvar_storage[slot][f]));
+			else
+				q_strlcpy (val, "0.0", sizeof (vr_wpncvar_storage[slot][f]));
+
+			c->name = name;
+			c->string = val;
+			c->flags = CVAR_ARCHIVE;
+			Cvar_RegisterVariable (c);
+		}
+	}
+}
+
+/*
+===============
+VR_WpnCVar
+
+===============
+VR_WpnCVar
+One weapon's one field. Slots are numbered from zero here and from one in the
+cvar names, matching quakevr's off-by-one so the names line up with its config.
+===============
+*/
+static cvar_t *VR_WpnCVar (int slot, vr_wpncvar_t field)
+{
+	if (slot < 0 || slot >= VR_MAX_WEAPONS || field < 0 || field >= WPNCV_COUNT)
+		return NULL;
+	return &vr_wpncvars[slot][field];
+}
+
+float VR_WpnCVarValue (int slot, vr_wpncvar_t field)
+{
+	cvar_t *c = VR_WpnCVar (slot, field);
+	return c ? c->value : 0.0f;
+}
+
+/*
+===============
+VR_WpnSlotForModel
+
+Which slot describes this model, or -1. quakevr scans the ID cvars the same way
+(VR_GetWpnCVarFromModelName, vr.cpp:690).
+===============
+*/
+int VR_WpnSlotForModel (const char *name)
+{
+	int i;
+
+	if (!name || !*name)
+		return -1;
+
+	for (i = 0; i < VR_MAX_WEAPONS; i++)
+		if (vr_wpncvars[i][WPNCV_ID].string && !q_strcasecmp (vr_wpncvars[i][WPNCV_ID].string, name))
+			return i;
+
+	return -1;
+}
+
 
 /*
 VR_FindWpnOffset
@@ -3068,28 +3268,30 @@ table is chosen by game directory exactly as quakevr does (vr.cpp:1027).
 */
 static const vr_wpn_offset_t *VR_FindWpnOffset (const char *model_name)
 {
-	const vr_wpn_offset_t *table;
-	size_t				   count, i;
+	static vr_wpn_offset_t live;
+	int					   slot;
 
 	if (!model_name || !*model_name)
 		return NULL;
 
-	if (!strcmp (COM_SkipPath (com_gamedir), "ad"))
-	{
-		table = vr_wpn_offsets_ad;
-		count = countof (vr_wpn_offsets_ad);
-	}
-	else
-	{
-		table = vr_wpn_offsets_id1;
-		count = countof (vr_wpn_offsets_id1);
-	}
+	// Read from the per-weapon cvars, so anything set in a config or typed in
+	// the headset takes effect without a rebuild -- and so quakevr's shipped
+	// config drives these directly. The static tables that used to answer this
+	// are gone; their values are now the cvars' defaults.
+	slot = VR_WpnSlotForModel (model_name);
+	if (slot < 0)
+		return NULL;
 
-	for (i = 0; i < count; i++)
-		if (!q_strcasecmp (table[i].model, model_name))
-			return &table[i];
-
-	return NULL;
+	live.model = model_name;
+	live.ofs_x = VR_WpnCVarValue (slot, WPNCV_X);
+	live.ofs_y = VR_WpnCVarValue (slot, WPNCV_Y);
+	live.ofs_z = VR_WpnCVarValue (slot, WPNCV_Z);
+	live.scale = VR_WpnCVarValue (slot, WPNCV_SCALE);
+	live.hand_av = (int)VR_WpnCVarValue (slot, WPNCV_HAND_AV);
+	live.hand_x = VR_WpnCVarValue (slot, WPNCV_HAND_X);
+	live.hand_y = VR_WpnCVarValue (slot, WPNCV_HAND_Y);
+	live.hand_z = VR_WpnCVarValue (slot, WPNCV_HAND_Z);
+	return &live;
 }
 
 /*
@@ -3405,36 +3607,31 @@ static void VR_XR_ScaleDump_f (void)
 
 void VR_XR_ModAllWeapons (void)
 {
-	const vr_wpn_offset_t *table;
-	size_t				   count, i;
+	int slot;
 
 	if (!vr_xr_active)
 		return;
 
-	if (!strcmp (COM_SkipPath (com_gamedir), "ad"))
+	// Walk the ID cvars rather than a table, the way quakevr's VR_ModAllWeapons
+	// does (vr.cpp:1154-1178). Slots naming a model this game does not ship are
+	// skipped, and "-1" means the slot is unused.
+	for (slot = 0; slot < VR_MAX_WEAPONS; slot++)
 	{
-		table = vr_wpn_offsets_ad;
-		count = countof (vr_wpn_offsets_ad);
-	}
-	else
-	{
-		table = vr_wpn_offsets_id1;
-		count = countof (vr_wpn_offsets_id1);
-	}
-
-	for (i = 0; i < count; i++)
-	{
+		const char *name = vr_wpncvars[slot][WPNCV_ID].string;
 		qmodel_t   *model;
 		aliashdr_t *hdr;
 
+		if (!name || !*name || !strcmp (name, "-1"))
+			continue;
+
 		// false: a weapon the current game does not ship is not an error
-		model = Mod_ForName (table[i].model, false);
+		model = Mod_ForName (name, false);
 		if (!model || model->type != mod_alias)
 			continue;
 
 		hdr = (aliashdr_t *)Mod_Extradata (model);
 		if (hdr)
-			VR_XR_ApplyWeaponModelMod (hdr, table[i].model);
+			VR_XR_ApplyWeaponModelMod (hdr, name);
 	}
 }
 
