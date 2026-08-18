@@ -105,6 +105,14 @@ static void GL_DrawAliasFrame (
 	else
 		pipeline_index = (showtris >= 2) ? MODEL_PIPELINE_SHOWTRIS_DEPTH_TEST : MODEL_PIPELINE_SHOWTRIS;
 
+	// VR body models carry MF_HOLEY, and vkQuake turns that into alpha
+	// blending for the whole model, which is what made the hands see-through.
+	// quakevr's GL path alpha-tests them and never blends (r_alias.cpp), so the
+	// holes stay holes and everything else stays solid. Only ever narrows what
+	// is drawn, and only for entities that ask for it.
+	if (e->alphatestonly && alphatest && entity_alpha >= 1.0f)
+		pipeline_index &= ~MODEL_PIPELINE_ALPHA_BLEND_BIT;
+
 	const qboolean oit_pass = cbx->render_pass_index == RENDER_PASS_INDEX_WBOIT || cbx->render_pass_index == RENDER_PASS_INDEX_MBOIT_MOMENTS ||
 							  cbx->render_pass_index == RENDER_PASS_INDEX_MBOIT_COMPOSITE;
 	if (oit_pass && (showtris != 0 || !has_alpha))

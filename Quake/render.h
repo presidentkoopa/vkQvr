@@ -112,7 +112,8 @@ typedef struct entity_s
 
 	byte	  eflags; // spike -- mostly a mirror of netstate, but handles tag inheritance (eww!)
 	byte	  alpha;  // johnfitz -- alpha
-	qboolean  horizFlip; // VR: mirror on Y, so one hand model serves both hands
+	qboolean  horizFlip;   // VR: mirror on Y, so one hand model serves both hands
+	qboolean  alphatestonly; // VR: holes via alpha test, never blend the whole model
 	entlerp_t lerp;
 
 #ifdef PSET_SCRIPT

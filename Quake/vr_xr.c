@@ -226,9 +226,9 @@ cvar_t vr_autosave_on_changelevel = {"vr_autosave_on_changelevel", "1", CVAR_ARC
 cvar_t vr_autosave_show_message = {"vr_autosave_show_message", "0", CVAR_ARCHIVE};
 
 // debug visualisations
-cvar_t vr_show_hip_holsters = {"vr_show_hip_holsters", "0", CVAR_ARCHIVE};
-cvar_t vr_show_shoulder_holsters = {"vr_show_shoulder_holsters", "0", CVAR_ARCHIVE};
-cvar_t vr_show_upper_holsters = {"vr_show_upper_holsters", "0", CVAR_ARCHIVE};
+cvar_t vr_show_hip_holsters = {"vr_show_hip_holsters", "1", CVAR_ARCHIVE};
+cvar_t vr_show_shoulder_holsters = {"vr_show_shoulder_holsters", "1", CVAR_ARCHIVE};
+cvar_t vr_show_upper_holsters = {"vr_show_upper_holsters", "1", CVAR_ARCHIVE};
 cvar_t vr_show_weapon_text = {"vr_show_weapon_text", "1", CVAR_ARCHIVE};
 cvar_t vr_vrtorso_debuglines_enabled = {"vr_vrtorso_debuglines_enabled", "0", CVAR_ARCHIVE};
 cvar_t vr_debug_print_handvel = {"vr_debug_print_handvel", "0", CVAR_ARCHIVE};
@@ -4961,6 +4961,7 @@ static void XR_SetupHandEntity (int hand, const vec3_t player_origin)
 	// Without this the model is scaled to nothing: these entities live in cl,
 	// which is memset on connect, and ENTSCALE_DECODE(0) is 0.
 	palm->netstate.scale = ENTSCALE_DEFAULT;
+	palm->alphatestonly = true;
 	// One hand model serves both hands, mirrored on Y for the off hand -- the
 	// same thing quakevr does with horizFlip (r_alias.cpp:1208).
 	palm->horizFlip = (hand == VR_XR_OffHand ());
@@ -4981,6 +4982,7 @@ static void XR_SetupHandEntity (int hand, const vec3_t player_origin)
 		f->colormap = vid.colormap;
 		f->alpha = ENTALPHA_DEFAULT;
 		f->netstate.scale = ENTSCALE_DEFAULT;
+		f->alphatestonly = true;
 		f->horizFlip = palm->horizFlip;
 	}
 }
@@ -5111,6 +5113,7 @@ void VR_XR_SetupBodyEntities (void)
 	cl.vrtorso.colormap = vid.colormap;
 	cl.vrtorso.alpha = ENTALPHA_DEFAULT;
 	cl.vrtorso.netstate.scale = ENTSCALE_DEFAULT;
+	cl.vrtorso.alphatestonly = true;
 
 	VectorCopy (player->origin, cl.vrtorso.origin);
 	VectorMA (cl.vrtorso.origin, vr_vrtorso_x_offset.value, fwd, cl.vrtorso.origin);
