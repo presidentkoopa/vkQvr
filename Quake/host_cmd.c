@@ -1415,6 +1415,13 @@ static void Host_Changelevel_f (void)
 		Host_Error ("cannot find map %s", level);
 	// johnfitz
 
+	// quakevr saves before a level change so a bad transition costs nothing
+	// (saveutil.cpp doChangelevelAutosave). Here, before the spawnparms are
+	// saved and the old level torn down, is the last point the outgoing state
+	// still exists.
+	if (vr_autosave_on_changelevel.value)
+		VR_XR_AutosaveNow ();
+
 	if (cls.state != ca_dedicated)
 		IN_Activate ();	 // -- S.A.
 	key_dest = key_game; // remove console or menu

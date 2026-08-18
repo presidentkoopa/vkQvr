@@ -197,6 +197,8 @@ int VR_XR_Impulse (void);
 // Called once per frame from the host loop.
 void VR_XR_UpdateLaser (void);
 void VR_XR_AutosaveTick (void);
+void VR_XR_AutosaveNow (void);
+void VR_ClearWorldText (void);
 void VR_XR_DebugPrints (void);
 qboolean VR_XR_HolsterSpot (int hotspot, vec3_t out);
 float VR_XR_BodyYaw (void);
@@ -243,6 +245,7 @@ extern cvar_t vr_show_shoulder_holsters;
 extern cvar_t vr_show_upper_holsters;
 extern cvar_t vr_debug_show_hand_pos_and_rot;
 extern cvar_t vr_hip_holster_thresh;
+extern cvar_t vr_autosave_on_changelevel;
 extern cvar_t vr_shoulder_holster_thresh;
 extern cvar_t vr_upper_holster_thresh;
 

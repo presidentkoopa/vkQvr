@@ -3692,10 +3692,38 @@ void VR_XR_DebugPrints (void)
 		Con_Printf ("headvel: (%.1f %.1f %.1f)\n", xr_head_velocity[0], xr_head_velocity[1], xr_head_velocity[2]);
 }
 
+static double xr_last_autosave = 0.0;
+static int	  xr_autosave_slot = 0;
+
+/*
+===============
+VR_XR_AutosaveNow
+
+Write one autosave immediately, advancing the ring. Used by the timer and by
+the level change, which quakevr also saves on (saveutil.cpp
+doChangelevelAutosave).
+===============
+*/
+void VR_XR_AutosaveNow (void)
+{
+	if (!sv.active || svs.maxclients != 1)
+		return;
+	if (cls.state != ca_connected || cls.demoplayback)
+		return;
+	if (cl.stats[STAT_HEALTH] <= 0)
+		return;
+
+	xr_last_autosave = realtime;
+
+	if (vr_autosave_show_message.value)
+		Con_Printf ("Creating autosave...\n");
+
+	Cbuf_AddText (va ("save auto%d\n", xr_autosave_slot));
+	xr_autosave_slot = (xr_autosave_slot + 1) % 12;
+}
+
 void VR_XR_AutosaveTick (void)
 {
-	static double last_save = 0.0;
-	static int	  slot = 0;
 
 	if (vr_autosave_seconds.value <= 0.0f)
 		return;
@@ -3708,22 +3736,16 @@ void VR_XR_AutosaveTick (void)
 
 	// start the clock on the first eligible frame rather than at time zero,
 	// which would fire a save the instant a map loads
-	if (last_save == 0.0)
+	if (xr_last_autosave == 0.0)
 	{
-		last_save = realtime;
+		xr_last_autosave = realtime;
 		return;
 	}
 
-	if (realtime - last_save < vr_autosave_seconds.value)
+	if (realtime - xr_last_autosave < vr_autosave_seconds.value)
 		return;
 
-	last_save = realtime;
-
-	if (vr_autosave_show_message.value)
-		Con_Printf ("Creating autosave...\n");
-
-	Cbuf_AddText (va ("save auto%d\n", slot));
-	slot = (slot + 1) % 12;
+	VR_XR_AutosaveNow ();
 }
 
 void VR_XR_UpdateLaser (void)

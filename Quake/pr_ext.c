@@ -5540,6 +5540,11 @@ static void PF_vr_asin (void);
 static void PF_vr_acos (void);
 static void PF_vr_atan (void);
 static void PF_vr_atan2 (void);
+static void PF_vr_worldtext_hmake (void);
+static void PF_vr_worldtext_hsettext (void);
+static void PF_vr_worldtext_hsetpos (void);
+static void PF_vr_worldtext_hsetangles (void);
+static void PF_vr_worldtext_hsethalign (void);
 static void PF_vr_sqrt (void);
 static void PF_vr_maprange (void);
 static void PF_vr_makeforward (void);
@@ -5830,6 +5835,11 @@ static struct
 	{"atan",						PF_vr_atan,						PF_vr_atan,						107,	"float(float x)"},
 	{"vr_sqrt",						PF_vr_sqrt,						PF_vr_sqrt,						108,	"float(float x)"},
 	{"atan2",						PF_vr_atan2,					PF_vr_atan2,					109,	"float(float y, float x)"},
+	{"worldtext_hmake",				PF_vr_worldtext_hmake,			PF_Fixme,						91,		"float()"},
+	{"worldtext_hsettext",			PF_vr_worldtext_hsettext,		PF_Fixme,						92,		"void(float h, string s)"},
+	{"worldtext_hsetpos",			PF_vr_worldtext_hsetpos,		PF_Fixme,						93,		"void(float h, vector p)"},
+	{"worldtext_hsetangles",		PF_vr_worldtext_hsetangles,		PF_Fixme,						94,		"void(float h, vector a)"},
+	{"worldtext_hsethalign",		PF_vr_worldtext_hsethalign,		PF_Fixme,						96,		"void(float h, float a)"},
 };
 // clang-format on
 
@@ -6146,6 +6156,102 @@ static void PF_vr_atan (void)
 {
 	G_FLOAT (OFS_RETURN) = atanf (G_FLOAT (OFS_PARM0));
 }
+/*
+================================================================================
+
+	WORLD TEXT
+
+	quakevr can hang text in the world -- signs and labels placed by
+	buttons.qc when a map spawns a worldtext entity. The QC drives it through
+	five builtins that make a handle and then set the text, position, angles
+	and alignment on it.
+
+	These store the data and nothing else yet: there is no 3D text renderer
+	here. quakevr draws its through fixed-function GL_QUADS against the charset
+	texture (vr_showfn.cpp), which Vulkan has no equivalent for, so drawing it
+	needs a textured world-space pipeline that does not exist in this port.
+
+	Storing without drawing is still worth doing. An unimplemented builtin is a
+	hard Host_Error, so before this any map placing a worldtext entity would
+	take the game down; now it loads and the sign is merely invisible. The data
+	is kept so a renderer can be added later without touching the QC side.
+
+================================================================================
+*/
+
+#define VR_MAX_WORLDTEXT 256
+
+typedef struct
+{
+	char	 text[256];
+	vec3_t	 pos;
+	vec3_t	 angles;
+	int		 halign; // 0 left, 1 center, 2 right
+	qboolean used;
+} vr_worldtext_t;
+
+static vr_worldtext_t vr_worldtext[VR_MAX_WORLDTEXT];
+static int			  vr_num_worldtext = 0;
+
+void VR_ClearWorldText (void)
+{
+	memset (vr_worldtext, 0, sizeof (vr_worldtext));
+	vr_num_worldtext = 0;
+}
+
+// quakevr Host_Errors on an invalid handle; matching that, since a bad handle
+// means the QC and the engine disagree about state and carrying on would hide it
+static vr_worldtext_t *VR_WorldTextFromHandle (int h)
+{
+	if (h < 0 || h >= VR_MAX_WORLDTEXT || !vr_worldtext[h].used)
+	{
+		Host_Error ("Invalid world text handle '%d'", h);
+		return NULL;
+	}
+	return &vr_worldtext[h];
+}
+
+static void PF_vr_worldtext_hmake (void)
+{
+	if (vr_num_worldtext >= VR_MAX_WORLDTEXT)
+	{
+		Host_Error ("No free world text handles available");
+		return;
+	}
+
+	vr_worldtext[vr_num_worldtext].used = true;
+	G_FLOAT (OFS_RETURN) = (float)vr_num_worldtext;
+	vr_num_worldtext++;
+}
+
+static void PF_vr_worldtext_hsettext (void)
+{
+	vr_worldtext_t *wt = VR_WorldTextFromHandle ((int)G_FLOAT (OFS_PARM0));
+	if (wt)
+		q_strlcpy (wt->text, G_STRING (OFS_PARM1), sizeof (wt->text));
+}
+
+static void PF_vr_worldtext_hsetpos (void)
+{
+	vr_worldtext_t *wt = VR_WorldTextFromHandle ((int)G_FLOAT (OFS_PARM0));
+	if (wt)
+		VectorCopy (G_VECTOR (OFS_PARM1), wt->pos);
+}
+
+static void PF_vr_worldtext_hsetangles (void)
+{
+	vr_worldtext_t *wt = VR_WorldTextFromHandle ((int)G_FLOAT (OFS_PARM0));
+	if (wt)
+		VectorCopy (G_VECTOR (OFS_PARM1), wt->angles);
+}
+
+static void PF_vr_worldtext_hsethalign (void)
+{
+	vr_worldtext_t *wt = VR_WorldTextFromHandle ((int)G_FLOAT (OFS_PARM0));
+	if (wt)
+		wt->halign = (int)G_FLOAT (OFS_PARM1);
+}
+
 static void PF_vr_atan2 (void)
 {
 	G_FLOAT (OFS_RETURN) = atan2f (G_FLOAT (OFS_PARM0), G_FLOAT (OFS_PARM1));
