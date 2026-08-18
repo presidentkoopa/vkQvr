@@ -1225,6 +1225,113 @@ static void R_DrawVRCrosshair (cb_context_t *cbx)
 	R_EndDebugUtilsLabel (cbx);
 }
 
+/*
+================
+R_DrawVRDebug
+
+quakevr's holster and hand visualisations (vr_showfn.cpp). Holster hotspots are
+invisible volumes hanging off the player's body, and the offsets that place them
+are hard to tune blind -- these draw them so a player can see where they are
+reaching. Same debug-line pipeline the crosshair uses.
+================
+*/
+static void R_DrawVRDebug (cb_context_t *cbx)
+{
+	static const int hip[2] = {QVR_HS_LEFT_HIP_HOLSTER, QVR_HS_RIGHT_HIP_HOLSTER};
+	static const int shoulder[2] = {QVR_HS_LEFT_SHOULDER_HOLSTER, QVR_HS_RIGHT_SHOULDER_HOLSTER};
+	static const int upper[2] = {QVR_HS_LEFT_UPPER_HOLSTER, QVR_HS_RIGHT_UPPER_HOLSTER};
+
+	const int *sets[3] = {hip, shoulder, upper};
+	const float shown[3] = {vr_show_hip_holsters.value, vr_show_shoulder_holsters.value, vr_show_upper_holsters.value};
+	const uint32_t colors[3] = {0x8000ff00u, 0x80ff0000u, 0x8000ffffu};
+
+	int		 set, side, i;
+	qboolean any;
+
+	if (!VR_XR_SessionRunning ())
+		return;
+
+	any = (shown[0] != 0.0f) || (shown[1] != 0.0f) || (shown[2] != 0.0f) || (vr_debug_show_hand_pos_and_rot.value != 0.0f);
+	if (!any)
+		return;
+
+	R_BeginDebugUtilsLabel (cbx, "vr debug");
+	R_BindPipeline (cbx, VK_PIPELINE_BIND_POINT_GRAPHICS, vulkan_globals.debug_lines_pipeline[R_MainPassPipelineVariant (cbx->render_pass_index)]);
+
+	for (set = 0; set < 3; set++)
+	{
+		if (shown[set] == 0.0f)
+			continue;
+
+		for (side = 0; side < 2; side++)
+		{
+			vec3_t spot;
+			if (!VR_XR_HolsterSpot (sets[set][side], spot))
+				continue;
+
+			// a three-axis cross, sized to the hotspot's own reach so what is
+			// drawn is what the hand actually has to enter
+			{
+				VkBuffer	   vb;
+				VkDeviceSize   vbo;
+				basicvertex_t *v = (basicvertex_t *)R_VertexAllocate (6 * sizeof (basicvertex_t), &vb, &vbo);
+				const float	   r = 6.0f;
+
+				for (i = 0; i < 3; i++)
+				{
+					vec3_t a, b;
+					VectorCopy (spot, a);
+					VectorCopy (spot, b);
+					a[i] -= r;
+					b[i] += r;
+					R_FillDebugVertex (&v[i * 2 + 0], a, colors[set]);
+					R_FillDebugVertex (&v[i * 2 + 1], b, colors[set]);
+				}
+
+				vulkan_globals.vk_cmd_bind_vertex_buffers (cbx->cb, 0, 1, &vb, &vbo);
+				vulkan_globals.vk_cmd_draw (cbx->cb, 6, 1, 0, 0);
+			}
+		}
+	}
+
+	if (vr_debug_show_hand_pos_and_rot.value != 0.0f)
+	{
+		int hand;
+		for (hand = 0; hand < 2; hand++)
+		{
+			vec3_t pos, ang, fwd, right, up;
+			if (!VR_XR_HandDebug (hand, pos, ang))
+				continue;
+
+			AngleVectors (ang, fwd, right, up);
+
+			// forward red, right green, up blue -- the usual convention, so
+			// which way a hand is actually facing can be read at a glance
+			{
+				VkBuffer	   vb;
+				VkDeviceSize   vbo;
+				basicvertex_t *v = (basicvertex_t *)R_VertexAllocate (6 * sizeof (basicvertex_t), &vb, &vbo);
+				vec3_t		   e;
+
+				VectorMA (pos, 8.0f, fwd, e);
+				R_FillDebugVertex (&v[0], pos, 0xff0000ffu);
+				R_FillDebugVertex (&v[1], e, 0xff0000ffu);
+				VectorMA (pos, 8.0f, right, e);
+				R_FillDebugVertex (&v[2], pos, 0xff00ff00u);
+				R_FillDebugVertex (&v[3], e, 0xff00ff00u);
+				VectorMA (pos, 8.0f, up, e);
+				R_FillDebugVertex (&v[4], pos, 0xffff0000u);
+				R_FillDebugVertex (&v[5], e, 0xffff0000u);
+
+				vulkan_globals.vk_cmd_bind_vertex_buffers (cbx->cb, 0, 1, &vb, &vbo);
+				vulkan_globals.vk_cmd_draw (cbx->cb, 6, 1, 0, 0);
+			}
+		}
+	}
+
+	R_EndDebugUtilsLabel (cbx);
+}
+
 static void R_ShowBoundingBoxes (cb_context_t *cbx)
 {
 	vec3_t	 mins, maxs, center;
@@ -1670,6 +1777,7 @@ static void R_DrawViewModelTask (void *unused)
 	R_ShowSkeletons (cbx);
 	R_ShowBoundingBoxes (cbx); // johnfitz
 	R_DrawVRCrosshair (cbx);
+	R_DrawVRDebug (cbx);
 	R_ShowPointFile (cbx);
 }
 

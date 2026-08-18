@@ -3469,6 +3469,37 @@ saving during a demo, a menu, an intermission or a death would produce a save
 nobody wants.
 ===============
 */
+/*
+===============
+VR_XR_DebugPrints
+
+quakevr's velocity readouts (vr.cpp debugPrintHandvel and its head
+counterpart). Rate-limited to once a second: printed every frame they scroll
+far too fast to read anything off.
+===============
+*/
+void VR_XR_DebugPrints (void)
+{
+	static double last_print = 0.0;
+
+	if (!VR_XR_SessionRunning ())
+		return;
+	if (!vr_debug_print_handvel.value && !vr_debug_print_headvel.value)
+		return;
+	if (realtime - last_print <= 1.0)
+		return;
+
+	last_print = realtime;
+
+	if (vr_debug_print_handvel.value)
+		Con_Printf (
+			"handvel: L %.2f (%.1f %.1f %.1f) | R %.2f (%.1f %.1f %.1f)\n", vr_xr_hand[0].speed, vr_xr_hand[0].velocity[0], vr_xr_hand[0].velocity[1],
+			vr_xr_hand[0].velocity[2], vr_xr_hand[1].speed, vr_xr_hand[1].velocity[0], vr_xr_hand[1].velocity[1], vr_xr_hand[1].velocity[2]);
+
+	if (vr_debug_print_headvel.value && xr_head_vel_valid)
+		Con_Printf ("headvel: (%.1f %.1f %.1f)\n", xr_head_velocity[0], xr_head_velocity[1], xr_head_velocity[2]);
+}
+
 void VR_XR_AutosaveTick (void)
 {
 	static double last_save = 0.0;
@@ -4539,6 +4570,78 @@ static int XR_ComputeHotSpot (const vec3_t hand_world, const vec3_t player_origi
 
 	return QVR_HS_NONE;
 }
+
+/*
+===============
+VR_XR_HolsterSpot
+
+The world position of one holster hotspot, for the debug visualisations to
+draw. Returns false when the index is not a holster or there is no player to
+hang it off.
+===============
+*/
+qboolean VR_XR_HolsterSpot (int hotspot, vec3_t out)
+{
+	vec3_t player_origin;
+
+	if (!VR_XR_SessionRunning ())
+		return false;
+	if (cl.viewentity <= 0 || cl.viewentity >= cl.max_edicts || !cl.entities)
+		return false;
+
+	VectorCopy (cl.entities[cl.viewentity].origin, player_origin);
+
+	switch (hotspot)
+	{
+	case QVR_HS_LEFT_SHOULDER_HOLSTER:
+		XR_BodyAnchor (
+			player_origin, vr_shoulder_offset_x.value + vr_shoulder_holster_offset_x.value,
+			-(vr_shoulder_offset_y.value + vr_shoulder_holster_offset_y.value), vr_shoulder_offset_z.value + vr_shoulder_holster_offset_z.value, out);
+		return true;
+	case QVR_HS_RIGHT_SHOULDER_HOLSTER:
+		XR_BodyAnchor (
+			player_origin, vr_shoulder_offset_x.value + vr_shoulder_holster_offset_x.value,
+			vr_shoulder_offset_y.value + vr_shoulder_holster_offset_y.value, vr_shoulder_offset_z.value + vr_shoulder_holster_offset_z.value, out);
+		return true;
+	case QVR_HS_LEFT_HIP_HOLSTER:
+		XR_BodyAnchor (player_origin, vr_hip_offset_x.value, -vr_hip_offset_y.value, vr_hip_offset_z.value, out);
+		return true;
+	case QVR_HS_RIGHT_HIP_HOLSTER:
+		XR_BodyAnchor (player_origin, vr_hip_offset_x.value, vr_hip_offset_y.value, vr_hip_offset_z.value, out);
+		return true;
+	case QVR_HS_LEFT_UPPER_HOLSTER:
+		XR_BodyAnchor (player_origin, vr_upper_holster_offset_x.value, -vr_upper_holster_offset_y.value, vr_upper_holster_offset_z.value, out);
+		return true;
+	case QVR_HS_RIGHT_UPPER_HOLSTER:
+		XR_BodyAnchor (player_origin, vr_upper_holster_offset_x.value, vr_upper_holster_offset_y.value, vr_upper_holster_offset_z.value, out);
+		return true;
+	default:
+		return false;
+	}
+}
+
+/*
+===============
+VR_XR_HandDebug
+
+Position and orientation of one hand in the world, for the debug drawing.
+===============
+*/
+qboolean VR_XR_HandDebug (int hand, vec3_t out_pos, vec3_t out_angles)
+{
+	vec3_t vel;
+
+	if (!VR_XR_SessionRunning () || hand < 0 || hand >= VR_HANDS)
+		return false;
+	if (!vr_xr_hand[hand].tracked)
+		return false;
+	if (cl.viewentity <= 0 || cl.viewentity >= cl.max_edicts || !cl.entities)
+		return false;
+
+	XR_HandToWorld (&vr_xr_hand[hand], cl.entities[cl.viewentity].origin, out_pos, out_angles, vel);
+	return true;
+}
+
 
 /*
 	VR BODY

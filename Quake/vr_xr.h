@@ -197,6 +197,9 @@ int VR_XR_Impulse (void);
 // Called once per frame from the host loop.
 void VR_XR_UpdateLaser (void);
 void VR_XR_AutosaveTick (void);
+void VR_XR_DebugPrints (void);
+qboolean VR_XR_HolsterSpot (int hotspot, vec3_t out);
+qboolean VR_XR_HandDebug (int hand, vec3_t out_pos, vec3_t out_angles);
 
 extern cvar_t vr_gun_offset_x;
 extern cvar_t vr_gun_offset_y;
@@ -234,6 +237,10 @@ extern cvar_t vr_crosshair_depth;
 extern cvar_t vr_crosshair_size;
 extern cvar_t vr_crosshair_alpha;
 extern cvar_t vr_crosshairy;
+extern cvar_t vr_show_hip_holsters;
+extern cvar_t vr_show_shoulder_holsters;
+extern cvar_t vr_show_upper_holsters;
+extern cvar_t vr_debug_show_hand_pos_and_rot;
 
 extern cvar_t vr_vrtorso_enabled;
 extern cvar_t vr_vrtorso_x_offset;
