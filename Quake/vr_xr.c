@@ -57,6 +57,10 @@ float VR_XR_BodyYaw (void);
 // (vr_cvars.cpp:173-187).
 cvar_t vr_gun_debug = {"vr_gun_debug", "0", CVAR_NONE};
 
+// The once-a-second frame, hand, body and weapon readouts. Off: they exist for
+// working out placement, and are noise during play.
+cvar_t vr_debug_stats = {"vr_debug_stats", "0", CVAR_ARCHIVE};
+
 // Fraction of the headset's own per-eye resolution to render at. 1.0 is native.
 // Read during VR_XR_Init, before the video mode is chosen, so it cannot be
 // changed at runtime -- set it and restart.
@@ -610,6 +614,7 @@ void VR_XR_Init (void)
 	Cvar_RegisterVariable (&vr_teleport_range);
 	Cvar_RegisterVariable (&vr_gun_wall_collision);
 	Cvar_RegisterVariable (&vr_gun_debug);
+	Cvar_RegisterVariable (&vr_debug_stats);
 	Cvar_RegisterVariable (&vr_render_scale);
 	Cvar_RegisterVariable (&vr_wpn_offsets);
 	Cvar_RegisterVariable (&vr_hud_enabled);
@@ -1934,8 +1939,13 @@ void VR_XR_EndFrame (void)
 			shouldrender++;
 		if (xr_eye_rendered[0] && xr_eye_rendered[1] && xr_views_valid)
 			submitted++;
+		// Once a second, and only when asked for. These were essential while the
+		// body and weapon placement was being worked out and are pure noise in
+		// the console once it is right. vr_debug_stats 1 brings them back.
 		if ((frames % 90) == 0)
 		{
+			if (vr_debug_stats.value)
+			{
 			Con_Printf (
 				"XR: %d frames | shouldRender %d | eye0 %d | eye1 %d | layer %d | noviews %d\n", frames, shouldrender, e0, e1, submitted, noviews);
 			Con_Printf (
@@ -2023,6 +2033,8 @@ void VR_XR_EndFrame (void)
 						ctrl[2] - (*po)[2], cl.vrhand[mhh].origin[2] - (*po)[2], wo[2] - (*po)[2], mdl_ofs, cl.vrhand[mhh].origin[2] - ctrl[2]);
 				}
 			}
+			}
+
 			frames = e0 = e1 = submitted = noviews = shouldrender = 0;
 		}
 	}
