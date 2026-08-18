@@ -47,6 +47,7 @@ static void VR_XR_Recenter_f (void);
 static void VR_XR_ScaleDump_f (void);
 static void VR_XR_BodyDump_f (void);
 static float XR_CrouchRatio (void);
+static void XR_HandToWorld (const vr_hand_t *h, const vec3_t player_origin, vec3_t out_pos, vec3_t out_angles, vec3_t out_vel);
 float VR_XR_BodyYaw (void);
 
 // Finger tracking cvars, declared here because VR_XR_Init registers them well
@@ -347,10 +348,21 @@ cvar_t vr_verbosebots = {"vr_verbosebots", "0", CVAR_ARCHIVE};
 ================================================================================
 */
 
-// whole hand: base and fingers together
-cvar_t vr_fingers_and_base_x = {"vr_fingers_and_base_x", "1.925", CVAR_ARCHIVE};
-cvar_t vr_fingers_and_base_y = {"vr_fingers_and_base_y", "-2.825", CVAR_ARCHIVE};
-cvar_t vr_fingers_and_base_z = {"vr_fingers_and_base_z", "-2.075", CVAR_ARCHIVE};
+// Whole hand: base and fingers together. This is the term that positions the
+// hand relative to its anchor, and quakevr's shipped values (1.925, -2.825,
+// -2.075) were tuned against ITS anchor -- the per-weapon hand_av vertex.
+// That anchor is disabled here, because for v_shot it lands on the muzzle and
+// a hand there was tried and rejected; this port anchors to a mesh search for
+// the rear of the stock instead.
+//
+// Using quakevr's offsets against a different anchor is incoherent -- they were
+// authored as a pair -- and measured 5.2 units of daylight between the hand and
+// the controller. Zeroed, so the palm sits on the anchor. The per-finger terms
+// below are kept, since those arrange fingers around the palm and do not depend
+// on where the palm is.
+cvar_t vr_fingers_and_base_x = {"vr_fingers_and_base_x", "0", CVAR_ARCHIVE};
+cvar_t vr_fingers_and_base_y = {"vr_fingers_and_base_y", "0", CVAR_ARCHIVE};
+cvar_t vr_fingers_and_base_z = {"vr_fingers_and_base_z", "0", CVAR_ARCHIVE};
 
 // added on top for the off hand only
 cvar_t vr_fingers_and_base_offhand_x = {"vr_fingers_and_base_offhand_x", "0", CVAR_ARCHIVE};
@@ -1963,6 +1975,31 @@ void VR_XR_EndFrame (void)
 						(*po)[0], (*po)[1], (*po)[2], xr_last_head_pos[0], xr_last_head_pos[1], xr_last_head_pos[2], vr_xr_hand[mh].aim_pos[0],
 						vr_xr_hand[mh].aim_pos[1], vr_xr_hand[mh].aim_pos[2], wo[0], wo[1], wo[2], wo[0] - ((*po)[0] + xr_last_head_pos[0]),
 						wo[1] - ((*po)[1] + xr_last_head_pos[1]), wo[2] - ((*po)[2] + xr_last_head_pos[2]), wa[0], wa[1], wa[2]);
+				// The vertical stack, all relative to the player entity, so the
+				// two reported gaps -- controller to hand, hand to gun -- can be
+				// read off directly instead of reasoned about.
+				{
+					const int mhh = VR_XR_MainHand ();
+					vec3_t	  ctrl, hang, hvel;
+					float	  mdl_ofs = 0.0f;
+
+					XR_HandToWorld (&vr_xr_hand[mhh], *po, ctrl, hang, hvel);
+
+					if (cl.viewent.model && cl.viewent.model->type == mod_alias)
+					{
+						aliashdr_t *vh = (aliashdr_t *)Mod_Extradata (cl.viewent.model);
+						if (vh)
+							mdl_ofs = vh->scale_origin[2];
+					}
+
+					// hand-controller is the number that matters: it should be
+					// zero. The model offset is reported raw, in model space --
+					// it is rotated by the weapon's angles before it means
+					// anything in the world, so do not read it as a height.
+					Con_Printf (
+						"XR stack: controller z %.1f | hand z %.1f | wpn ent z %.1f | model ofs z %.1f (model space) | hand-controller %.1f\n",
+						ctrl[2] - (*po)[2], cl.vrhand[mhh].origin[2] - (*po)[2], wo[2] - (*po)[2], mdl_ofs, cl.vrhand[mhh].origin[2] - ctrl[2]);
+				}
 			}
 			frames = e0 = e1 = submitted = noviews = shouldrender = 0;
 		}
