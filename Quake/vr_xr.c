@@ -3452,6 +3452,57 @@ A dynamic light at the impact point. Cheap, needs no new rendering path, and
 reads as a laser dot because it lights the surface it lands on.
 ===============
 */
+/*
+===============
+VR_XR_AutosaveTick
+
+quakevr rotates through a ring of autosave slots rather than overwriting one,
+so a bad save cannot cost the run (saveutil.cpp:190-235). Twelve slots, matching
+its MAX_AUTOSAVES, named auto0 through auto11.
+
+quakevr picks the oldest slot by reading each file's timestamp. Cycling through
+them in order comes to the same thing -- the slot next in line is always the one
+written longest ago -- without needing to stat the save directory.
+
+Only in a single-player game that is actually running, with the player alive:
+saving during a demo, a menu, an intermission or a death would produce a save
+nobody wants.
+===============
+*/
+void VR_XR_AutosaveTick (void)
+{
+	static double last_save = 0.0;
+	static int	  slot = 0;
+
+	if (vr_autosave_seconds.value <= 0.0f)
+		return;
+	if (!sv.active || svs.maxclients != 1)
+		return;
+	if (cls.state != ca_connected || cls.signon != SIGNONS || cls.demoplayback)
+		return;
+	if (cl.intermission || cl.stats[STAT_HEALTH] <= 0)
+		return;
+
+	// start the clock on the first eligible frame rather than at time zero,
+	// which would fire a save the instant a map loads
+	if (last_save == 0.0)
+	{
+		last_save = realtime;
+		return;
+	}
+
+	if (realtime - last_save < vr_autosave_seconds.value)
+		return;
+
+	last_save = realtime;
+
+	if (vr_autosave_show_message.value)
+		Con_Printf ("Creating autosave...\n");
+
+	Cbuf_AddText (va ("save auto%d\n", slot));
+	slot = (slot + 1) % 12;
+}
+
 void VR_XR_UpdateLaser (void)
 {
 	vec3_t	  origin, angles, forward, right, up, end, impact;

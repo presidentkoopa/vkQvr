@@ -196,6 +196,7 @@ int VR_XR_Impulse (void);
 // Places a dynamic light where the aiming hand is pointing, as a laser dot.
 // Called once per frame from the host loop.
 void VR_XR_UpdateLaser (void);
+void VR_XR_AutosaveTick (void);
 
 extern cvar_t vr_gun_offset_x;
 extern cvar_t vr_gun_offset_y;
