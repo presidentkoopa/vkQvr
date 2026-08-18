@@ -263,6 +263,17 @@ void GL_MakeAliasModelDisplayLists (qmodel_t *m, aliashdr_t *paliashdr)
 
 	HashMap_Destroy (vertex_to_index_map);
 
+	// VR: keep the VBO-to-MDL vertex mapping. quakevr addresses hand anchor
+	// vertices by VBO index, and that numbering only exists here -- desc is
+	// freed a few lines below.
+	if (paliashdr->numverts_vbo > 0)
+	{
+		paliashdr->vbo_to_mdl = (unsigned short *)Mem_Alloc (sizeof (unsigned short) * paliashdr->numverts_vbo);
+		paliashdr->num_vbo_to_mdl = paliashdr->numverts_vbo;
+		for (int i = 0; i < paliashdr->numverts_vbo; i++)
+			paliashdr->vbo_to_mdl[i] = desc[i].vertindex;
+	}
+
 	// upload immediately
 	paliashdr->poseverttype = PV_QUAKE1;
 	GLMesh_UploadBuffers (m, paliashdr, indexes, (byte *)verts, desc, NULL, NULL, 0);

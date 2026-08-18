@@ -2963,6 +2963,12 @@ typedef struct
 	const char *model;
 	float		ofs_x, ofs_y, ofs_z;
 	float		scale;
+	// Where the hand grips this weapon: a VBO vertex index and an offset from
+	// it, both quakevr's (vr_wofs_hand_av_nn and vr_wofs_hand_x/y/z_nn in
+	// ReleaseFiles/Id1/config.cfg). A negative vertex means work it out from the
+	// mesh instead, for models quakevr has no entry for.
+	int			hand_av;
+	float		hand_x, hand_y, hand_z;
 } vr_wpn_offset_t;
 
 /*
@@ -2980,39 +2986,39 @@ static float VR_XR_GetScaleCorrect (void)
 
 // vanilla Quake, Scourge of Armagon, Dissolution of Eternity
 static const vr_wpn_offset_t vr_wpn_offsets_id1[] = {
-	{"progs/v_axe.mdl", -4.0f, 24.0f, 37.0f, 0.33f},
-	{"progs/v_shot.mdl", 1.5f, 1.0f, 10.0f, 0.5f},	  // gun
-	{"progs/v_shot2.mdl", -3.5f, 1.0f, 8.5f, 0.8f},	  // shotgun
-	{"progs/v_nail.mdl", -5.0f, 3.0f, 15.0f, 0.5f},	  // nailgun
-	{"progs/v_nail2.mdl", 0.0f, 3.0f, 19.0f, 0.5f},	  // supernailgun
-	{"progs/v_rock.mdl", 10.0f, 1.5f, 13.0f, 0.5f},	  // grenade
-	{"progs/v_rock2.mdl", 10.0f, 7.0f, 19.0f, 0.5f},  // rocket
-	{"progs/v_light.mdl", 3.0f, 4.0f, 13.0f, 0.5f},	  // lightning
-	{"progs/v_hammer.mdl", -4.0f, 18.0f, 37.0f, 0.33f},	 // mjolnir
-	{"progs/v_laserg.mdl", 65.0f, 3.7f, 17.0f, 0.33f},	 // laser
-	{"progs/v_prox.mdl", 10.0f, 1.5f, 13.0f, 0.5f},		 // proximity
-	{"progs/v_lava.mdl", -5.0f, 3.0f, 15.0f, 0.5f},		 // lava nailgun
-	{"progs/v_lava2.mdl", 0.0f, 3.0f, 19.0f, 0.5f},		 // lava supernailgun
-	{"progs/v_multi.mdl", 10.0f, 1.5f, 13.0f, 0.5f},	 // multigrenade
-	{"progs/v_multi2.mdl", 10.0f, 7.0f, 19.0f, 0.5f},	 // multirocket
-	{"progs/v_plasma.mdl", 3.0f, 4.0f, 13.0f, 0.5f},	 // plasma
-	{"progs/hand.mdl", 0.0f, 0.0f, 0.0f, 0.0f},
-	{"progs/v_grpple.mdl", 0.0f, 0.0f, 0.0f, 0.0f},
+	{"progs/v_axe.mdl", -4.0f, 24.0f, 37.0f, 0.33f, 2, 3.4f, 0.0f, 3.6f},
+	{"progs/v_shot.mdl", 1.5f, 1.0f, 10.0f, 0.5f, 165, 2.4f, 0.2f, 0.7f},		 // gun
+	{"progs/v_shot2.mdl", -3.5f, 1.0f, 8.5f, 0.8f, 65, -3.25f, 1.1f, 1.25f},		 // shotgun
+	{"progs/v_nail.mdl", -5.0f, 3.0f, 15.0f, 0.5f, 5, 0.8f, -1.3f, 0.1f},		 // nailgun
+	{"progs/v_nail2.mdl", 0.0f, 3.0f, 19.0f, 0.5f, 28, -0.8f, 0.2f, 2.6f},		 // supernailgun
+	{"progs/v_rock.mdl", 10.0f, 1.5f, 13.0f, 0.5f, 33, 0.4f, -1.5f, 2.0f},		 // grenade
+	{"progs/v_rock2.mdl", 10.0f, 7.0f, 19.0f, 0.5f, 12, 2.1f, -0.8f, 1.0f},		 // rocket
+	{"progs/v_light.mdl", 3.0f, 4.0f, 13.0f, 0.5f, 57, 2.4f, 0.7f, -1.35f},		 // lightning
+	{"progs/v_hammer.mdl", -4.0f, 18.0f, 37.0f, 0.33f, 0, 1.9f, 0.0f, 4.5f},	 // mjolnir
+	{"progs/v_laserg.mdl", 65.0f, 3.7f, 17.0f, 0.33f, 4, -16.2f, 1.9f, 10.3f},	 // laser
+	{"progs/v_prox.mdl", 10.0f, 1.5f, 13.0f, 0.5f, 33, 0.4f, -1.5f, 2.0f},		 // proximity
+	{"progs/v_lava.mdl", -5.0f, 3.0f, 15.0f, 0.5f, 5, 0.8f, -1.3f, 0.1f},		 // lava nailgun
+	{"progs/v_lava2.mdl", 0.0f, 3.0f, 19.0f, 0.5f, 44, -0.8f, 0.2f, 2.6f},		 // lava supernailgun
+	{"progs/v_multi.mdl", 10.0f, 1.5f, 13.0f, 0.5f, 33, 0.4f, -1.5f, 2.0f},		 // multigrenade
+	{"progs/v_multi2.mdl", 10.0f, 7.0f, 19.0f, 0.5f, 12, 2.1f, -0.8f, 1.0f},	 // multirocket
+	{"progs/v_plasma.mdl", 3.0f, 4.0f, 13.0f, 0.5f, 57, 2.4f, 0.7f, -1.35f},	 // plasma
+	{"progs/hand.mdl", 0.0f, 0.0f, 0.0f, 0.0f, 0, 1.7f, -4.25f, 2.0f},
+	{"progs/v_grpple.mdl", 0.0f, 0.0f, 0.0f, 0.0f, 68, 1.7f, -0.2f, 1.1f},
 };
 
 // Arcane Dimensions, tuned against v1.70 + patch1
 static const vr_wpn_offset_t vr_wpn_offsets_ad[] = {
-	{"progs/v_shadaxe0.mdl", -1.5f, 43.1f, 41.0f, 0.25f}, // shadow axe
-	{"progs/v_shadaxe3.mdl", -1.5f, 43.1f, 41.0f, 0.25f}, // shadow axe upgrade
-	{"progs/v_shot.mdl", 1.5f, 1.7f, 17.5f, 0.33f},		  // shotgun
-	{"progs/v_shot2.mdl", -3.5f, 0.4f, 8.5f, 0.8f},		  // double barrel
-	{"progs/v_shot3.mdl", -3.5f, 0.4f, 8.5f, 0.8f},		  // Widowmaker
-	{"progs/v_nail.mdl", -9.5f, 3.0f, 17.0f, 0.5f},
-	{"progs/v_nail2.mdl", -6.0f, 3.5f, 20.0f, 0.4f},
-	{"progs/v_rock.mdl", -3.0f, 1.25f, 17.0f, 0.5f},
-	{"progs/v_rock2.mdl", 0.0f, 5.55f, 22.5f, 0.45f},
-	{"progs/v_light.mdl", -4.0f, 3.1f, 13.0f, 0.5f},
-	{"progs/v_plasma.mdl", 2.8f, 1.8f, 22.5f, 0.5f},
+	{"progs/v_shadaxe0.mdl", -1.5f, 43.1f, 41.0f, 0.25f, -1, 0.0f, 0.0f, 0.0f}, // shadow axe
+	{"progs/v_shadaxe3.mdl", -1.5f, 43.1f, 41.0f, 0.25f, -1, 0.0f, 0.0f, 0.0f}, // shadow axe upgrade
+	{"progs/v_shot.mdl", 1.5f, 1.7f, 17.5f, 0.33f, -1, 0.0f, 0.0f, 0.0f},		  // shotgun
+	{"progs/v_shot2.mdl", -3.5f, 0.4f, 8.5f, 0.8f, -1, 0.0f, 0.0f, 0.0f},		  // double barrel
+	{"progs/v_shot3.mdl", -3.5f, 0.4f, 8.5f, 0.8f, -1, 0.0f, 0.0f, 0.0f},		  // Widowmaker
+	{"progs/v_nail.mdl", -9.5f, 3.0f, 17.0f, 0.5f, -1, 0.0f, 0.0f, 0.0f},
+	{"progs/v_nail2.mdl", -6.0f, 3.5f, 20.0f, 0.4f, -1, 0.0f, 0.0f, 0.0f},
+	{"progs/v_rock.mdl", -3.0f, 1.25f, 17.0f, 0.5f, -1, 0.0f, 0.0f, 0.0f},
+	{"progs/v_rock2.mdl", 0.0f, 5.55f, 22.5f, 0.45f, -1, 0.0f, 0.0f, 0.0f},
+	{"progs/v_light.mdl", -4.0f, 3.1f, 13.0f, 0.5f, -1, 0.0f, 0.0f, 0.0f},
+	{"progs/v_plasma.mdl", 2.8f, 1.8f, 22.5f, 0.5f, -1, 0.0f, 0.0f, 0.0f},
 };
 
 /*
@@ -5178,7 +5184,16 @@ static qboolean XR_AliasVertexWorldPos (entity_t *e, int vertex_index, const vec
 		return false;
 
 	if (vertex_index < 0)
+	{
 		vertex_index = XR_FindGripPointIndex (hdr);
+	}
+	else if (hdr->vbo_to_mdl && vertex_index < hdr->num_vbo_to_mdl)
+	{
+		// quakevr's anchor vertices are VBO indices. The mesh builder
+		// deduplicates and reorders, so index 165 there is not index 165 in
+		// the MDL, and the map captured at load is what reconciles them.
+		vertex_index = hdr->vbo_to_mdl[vertex_index];
+	}
 
 	vertex_index = CLAMP (0, vertex_index, hdr->numverts - 1);
 
@@ -5375,15 +5390,25 @@ static void XR_SetupHandEntity (int hand, const vec3_t player_origin)
 	if (vr_hand_grips_weapon.value)
 	{
 		entity_t *wpn = (hand == VR_XR_MainHand ()) ? &cl.viewent : &cl.offhand_viewent;
-		vec3_t	  grip, extra;
+		vec3_t				   grip, extra;
+		const vr_wpn_offset_t *w = wpn->model ? VR_FindWpnOffset (wpn->model->name) : NULL;
+		int					   av = (int)vr_grip_vertex.value;
 
-		// VR_GetWpnHandOffsets, applied inside the weapon's model frame
-		// (view.cpp:1436, 1446). Y mirrors with the hand.
-		extra[0] = vr_hand_offset_x.value;
-		extra[1] = (hand == VR_XR_OffHand ()) ? -vr_hand_offset_y.value : vr_hand_offset_y.value;
-		extra[2] = vr_hand_offset_z.value;
+		// Per-weapon grip: quakevr gives every weapon its own anchor vertex
+		// and its own offset from it (vr_wofs_hand_av_nn and
+		// vr_wofs_hand_x/y/z_nn). VR_GetWpnHandOffsets feeds extraOffsets,
+		// applied inside the weapon's model frame (view.cpp:1436, 1446).
+		// Y mirrors with the hand.
+		if (av < 0 && w && w->hand_av >= 0)
+			av = w->hand_av;
 
-		if (wpn->model && XR_AliasVertexWorldPos (wpn, (int)vr_grip_vertex.value, extra, grip))
+		extra[0] = w ? w->hand_x : vr_hand_offset_x.value;
+		extra[1] = w ? w->hand_y : vr_hand_offset_y.value;
+		extra[2] = w ? w->hand_z : vr_hand_offset_z.value;
+		if (hand == VR_XR_OffHand ())
+			extra[1] = -extra[1];
+
+		if (wpn->model && XR_AliasVertexWorldPos (wpn, av, extra, grip))
 			VectorCopy (grip, world);
 	}
 

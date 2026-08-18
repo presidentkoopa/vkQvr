@@ -380,6 +380,11 @@ typedef struct aliashdr_s
 	// GPU after load. MDL models only, and pose 0 only -- a grip point barely
 	// moves across a weapon's animation. NULL when not kept.
 	trivertx_t		   *anchorverts;
+	// VR: maps a VBO vertex index back to the MDL vertex it came from. quakevr's
+	// per-weapon hand anchor vertices are VBO indices, and the mesh builder
+	// deduplicates and reorders, so the two numberings do not agree.
+	unsigned short	   *vbo_to_mdl;
+	int					num_vbo_to_mdl;
 	// Cached result of the grip search over anchorverts.
 	int					gripvert;
 	qboolean			gripvalid;
