@@ -149,7 +149,22 @@ cvar_t vr_hand_grips_weapon = {"vr_hand_grips_weapon", "1", CVAR_ARCHIVE};
 // -1 means work the grip out from the mesh; 0 or above pins a specific vertex.
 cvar_t vr_grip_vertex = {"vr_grip_vertex", "-1", CVAR_ARCHIVE};
 
-cvar_t vr_hand_scale = {"vr_hand_scale", "1.0", CVAR_ARCHIVE};
+// The hand model's own transform. quakevr does not treat the hand as a special
+// case: it runs the hand through ApplyMod_Weapon with the "fist" weapon entry
+// (view.cpp:1489), so the hand gets a scale and a rotation from a weapon cvar
+// like anything else. These are that entry's shipped values, index 17 in
+// ReleaseFiles/Id1/config.cfg -- vr_wofs_scale_17, vr_wofs_pitch_17, and the
+// vr_wofs_hand_x/y/z_17 triple that offsets the hand from its anchor.
+cvar_t vr_hand_scale = {"vr_hand_scale", "0.34", CVAR_ARCHIVE};
+cvar_t vr_hand_pitch = {"vr_hand_pitch", "-8.5", CVAR_ARCHIVE};
+// vr_wofs_yaw_17 and vr_wofs_roll_17 are both 0 in the shipped config, but
+// quakevr mirrors them on the off hand, so they are kept as real knobs.
+cvar_t vr_hand_yaw = {"vr_hand_yaw", "0", CVAR_ARCHIVE};
+cvar_t vr_hand_roll = {"vr_hand_roll", "0", CVAR_ARCHIVE};
+// VR_GetWpnHandOffsets: fed to the vertex anchor in the weapon's model frame.
+cvar_t vr_hand_offset_x = {"vr_hand_offset_x", "1.7", CVAR_ARCHIVE};
+cvar_t vr_hand_offset_y = {"vr_hand_offset_y", "-4.25", CVAR_ARCHIVE};
+cvar_t vr_hand_offset_z = {"vr_hand_offset_z", "2", CVAR_ARCHIVE};
 
 // Measured in the headset: the OpenXR aim pose on this hardware points about
 // 30 degrees above where the controller actually is, so everything derived from
@@ -583,6 +598,12 @@ void VR_XR_Init (void)
 	Cvar_RegisterVariable (&vr_hand_grips_weapon);
 	Cvar_RegisterVariable (&vr_grip_vertex);
 	Cvar_RegisterVariable (&vr_hand_scale);
+	Cvar_RegisterVariable (&vr_hand_pitch);
+	Cvar_RegisterVariable (&vr_hand_yaw);
+	Cvar_RegisterVariable (&vr_hand_roll);
+	Cvar_RegisterVariable (&vr_hand_offset_x);
+	Cvar_RegisterVariable (&vr_hand_offset_y);
+	Cvar_RegisterVariable (&vr_hand_offset_z);
 	Cvar_RegisterVariable (&vr_gunangle);
 	Cvar_RegisterVariable (&vr_gunyaw);
 	Cvar_RegisterVariable (&vr_aimmode);
@@ -3172,15 +3193,20 @@ void VR_XR_ModAllModels (void)
 		XR_ModModel ("progs/legholster.mdl", scale, offset);
 	}
 
-	// Hands. Scale and origin move together so the model shrinks toward the
-	// controller point rather than drifting off it: a vertex ends up at
-	// v * scale + scale_origin, so scaling one without the other slides the
-	// whole model. No scale correction here -- quakevr applies none to these
-	// models, so vr_hand_scale is the final ratio and reads as one.
+	// Hands. quakevr does not treat these as a special case at all: it runs
+	// them through ApplyMod_Weapon with the fist weapon entry
+	// (view.cpp:1487-1491), which is VR_ApplyModelMod -- so the scale is
+	// multiplied by VR_GetScaleCorrect exactly as a weapon's is. The earlier
+	// note here claiming quakevr applies no correction to these models was
+	// wrong.
+	//
+	// Scale and origin move together so the model shrinks toward the controller
+	// point rather than sliding off it: a vertex ends up at v * scale +
+	// scale_origin, so scaling one without the other displaces the whole model.
 	{
 		static const char *hand_models[6] = {"progs/hand_base.mdl",	  "progs/finger_thumb.mdl", "progs/finger_index.mdl",
 											 "progs/finger_middle.mdl", "progs/finger_ring.mdl",  "progs/finger_pinky.mdl"};
-		const float		   k = vr_hand_scale.value;
+		const float		   k = vr_hand_scale.value * VR_XR_GetScaleCorrect ();
 		size_t			   n;
 
 		for (n = 0; n < countof (hand_models); n++)
@@ -4707,7 +4733,7 @@ float VR_XR_BodyYaw (void)
 	// down, yaw about the view axis says nothing about which way you face, so
 	// quakevr leans on the head's up vector instead as pitch passes 50 degrees.
 	eye_pitch = r_refdef.viewangles[PITCH];
-	head_yaw = cl.viewangles[YAW];
+	head_yaw = r_refdef.viewangles[YAW]; // the real head facing, physical turn included
 
 	if (eye_pitch < -50.0f || eye_pitch > 50.0f)
 	{
@@ -5316,9 +5342,15 @@ static void XR_SetupHandEntity (int hand, const vec3_t player_origin)
 	if (vr_hand_grips_weapon.value)
 	{
 		entity_t *wpn = (hand == VR_XR_MainHand ()) ? &cl.viewent : &cl.offhand_viewent;
-		vec3_t	  grip, none = {0.0f, 0.0f, 0.0f};
+		vec3_t	  grip, extra;
 
-		if (wpn->model && XR_AliasVertexWorldPos (wpn, (int)vr_grip_vertex.value, none, grip))
+		// VR_GetWpnHandOffsets, applied inside the weapon's model frame
+		// (view.cpp:1436, 1446). Y mirrors with the hand.
+		extra[0] = vr_hand_offset_x.value;
+		extra[1] = (hand == VR_XR_OffHand ()) ? -vr_hand_offset_y.value : vr_hand_offset_y.value;
+		extra[2] = vr_hand_offset_z.value;
+
+		if (wpn->model && XR_AliasVertexWorldPos (wpn, (int)vr_grip_vertex.value, extra, grip))
 			VectorCopy (grip, world);
 	}
 
@@ -5334,12 +5366,39 @@ static void XR_SetupHandEntity (int hand, const vec3_t player_origin)
 	// back right rather than left, hence the negated Y term.
 	AngleVectors (angles, fwd, right, up);
 
+	// The composed offset for the palm. quakevr mirrors the composed Y for the
+	// off hand before rotating it (view.cpp:1479-1483), so the two hands come
+	// out mirror images rather than both offset the same way in world space.
+	//
+	// The fist entry's own hand offset is deliberately NOT added here.
+	// VR_GetWpnHandOffsets feeds extraOffsets, which quakevr passes into
+	// VR_GetScaledAndAngledAliasVertexPosition (view.cpp:1436, 1446) where it
+	// is applied inside the weapon's model frame before any rotation -- a
+	// different frame from this one, and adding it twice would double it.
 	XR_HandPartOffset (XR_HAND_PART_BASE, hand, ofs);
+	if (hand == VR_XR_OffHand ())
+		ofs[1] = -ofs[1];
 	palm->origin[0] = world[0] + ofs[0] * fwd[0] - ofs[1] * right[0] + ofs[2] * up[0];
 	palm->origin[1] = world[1] + ofs[0] * fwd[1] - ofs[1] * right[1] + ofs[2] * up[1];
 	palm->origin[2] = world[2] + ofs[0] * fwd[2] - ofs[1] * right[2] + ofs[2] * up[2];
 
+	// The fist entry's angle offsets, exactly as quakevr applies them
+	// (view.cpp:1418-1429): added to the rotation BEFORE the pitch is inverted
+	// for drawing, so the drawn pitch is -(handRot + oPitch). Adding it after
+	// the inversion, as this did, flips its sign and twists the hand the wrong
+	// way. Yaw and roll mirror on the off hand; pitch does not.
 	VectorCopy (angles, palm->angles);
+	palm->angles[PITCH] += vr_hand_pitch.value + vr_gunmodelpitch.value;
+	if (hand == VR_XR_OffHand ())
+	{
+		palm->angles[YAW] -= vr_hand_yaw.value;
+		palm->angles[ROLL] -= vr_hand_roll.value;
+	}
+	else
+	{
+		palm->angles[YAW] += vr_hand_yaw.value;
+		palm->angles[ROLL] += vr_hand_roll.value;
+	}
 	palm->angles[PITCH] = -palm->angles[PITCH]; // alias models draw pitch inverted
 	// hand_base.mdl, not hand.mdl. hand.mdl is quakevr's empty-hand *weapon*
 	// placeholder, which it registers with scale 0 (vr.cpp:1069) precisely so
@@ -5363,6 +5422,8 @@ static void XR_SetupHandEntity (int hand, const vec3_t player_origin)
 		entity_t *f = &cl.vrfinger[hand][i];
 
 		XR_HandPartOffset (i, hand, ofs);
+		if (hand == VR_XR_OffHand ())
+			ofs[1] = -ofs[1]; // quakevr flips the composed Y for the off hand
 		f->origin[0] = world[0] + ofs[0] * fwd[0] - ofs[1] * right[0] + ofs[2] * up[0];
 		f->origin[1] = world[1] + ofs[0] * fwd[1] - ofs[1] * right[1] + ofs[2] * up[1];
 		f->origin[2] = world[2] + ofs[0] * fwd[2] - ofs[1] * right[2] + ofs[2] * up[2];
