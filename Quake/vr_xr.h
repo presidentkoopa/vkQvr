@@ -113,6 +113,13 @@ typedef struct
 	vec3_t	 aim_pos;	// aim pose - the controller's pointing ray, used for weapons
 	vec3_t	 aim_angles;
 
+	// Weapon weight lags these behind the tracked pose; see XR_ApplyWeaponWeight.
+	// Kept separately so the blend always runs from its own previous output
+	// rather than from a value something else may have already modified.
+	vec3_t	 weighted_pos;
+	vec3_t	 weighted_aim_pos;
+	vec3_t	 weighted_aim_angles;
+
 	float trigger; // 0..1, main fire
 	float grip;	   // 0..1, grab
 	float stick[2];

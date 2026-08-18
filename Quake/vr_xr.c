@@ -78,6 +78,39 @@ cvar_t vr_wpn_offsets = {"vr_wpn_offsets", "1", CVAR_ARCHIVE};
 // to the controller matrix before deriving handrot, and every offset in the
 // per-weapon table was tuned in that rotated frame.
 // (quakevr vr.cpp:3137-3155; defaults vr_cvars.cpp:54, 69)
+/*
+================================================================================
+
+	WEAPON WEIGHT
+
+	A heavy weapon should lag the controller rather than track it exactly.
+	quakevr does that by interpolating the hand position toward the tracked
+	position, and slerping the hand direction toward the tracked direction, by a
+	factor derived from the weapon's weight (vr.cpp VR_GetWeaponWeightFactorImpl
+	and VR_DoWeaponDirSlerp).
+
+	Worth knowing before tuning: at stock settings this does nothing at all,
+	in quakevr as much as here. Per-weapon Weight is the 21st argument of
+	InitWeaponCVars and no call passes it, so it is 0.0 for every weapon, the
+	factor clamps to 1.0, and the frametime-adjusted blend runs at about 1.11 at
+	90fps -- a complete blend to the tracked pose every frame. The machinery is
+	here to be dialled in, and until it is, the weapon tracks 1:1 exactly as
+	before.
+
+================================================================================
+*/
+
+cvar_t vr_wpn_pos_weight = {"vr_wpn_pos_weight", "1", CVAR_ARCHIVE};
+cvar_t vr_wpn_pos_weight_offset = {"vr_wpn_pos_weight_offset", "0.0", CVAR_ARCHIVE};
+cvar_t vr_wpn_pos_weight_mult = {"vr_wpn_pos_weight_mult", "1.0", CVAR_ARCHIVE};
+cvar_t vr_wpn_pos_weight_2h_help_offset = {"vr_wpn_pos_weight_2h_help_offset", "0.3", CVAR_ARCHIVE};
+cvar_t vr_wpn_pos_weight_2h_help_mult = {"vr_wpn_pos_weight_2h_help_mult", "1.0", CVAR_ARCHIVE};
+cvar_t vr_wpn_dir_weight = {"vr_wpn_dir_weight", "1", CVAR_ARCHIVE};
+cvar_t vr_wpn_dir_weight_offset = {"vr_wpn_dir_weight_offset", "0.0", CVAR_ARCHIVE};
+cvar_t vr_wpn_dir_weight_mult = {"vr_wpn_dir_weight_mult", "1.0", CVAR_ARCHIVE};
+cvar_t vr_wpn_dir_weight_2h_help_offset = {"vr_wpn_dir_weight_2h_help_offset", "0.3", CVAR_ARCHIVE};
+cvar_t vr_wpn_dir_weight_2h_help_mult = {"vr_wpn_dir_weight_2h_help_mult", "1.0", CVAR_ARCHIVE};
+
 cvar_t vr_gunangle = {"vr_gunangle", "0", CVAR_ARCHIVE};
 cvar_t vr_gunyaw = {"vr_gunyaw", "0", CVAR_ARCHIVE};
 cvar_t vr_gun_z_offset = {"vr_gun_z_offset", "0", CVAR_ARCHIVE};
@@ -398,6 +431,16 @@ void VR_XR_Init (void)
 	Cvar_RegisterVariable (&vr_menu_scale);
 	Cvar_RegisterVariable (&vr_menu_distance);
 	Cvar_RegisterVariable (&vr_lefthanded);
+	Cvar_RegisterVariable (&vr_wpn_pos_weight);
+	Cvar_RegisterVariable (&vr_wpn_pos_weight_offset);
+	Cvar_RegisterVariable (&vr_wpn_pos_weight_mult);
+	Cvar_RegisterVariable (&vr_wpn_pos_weight_2h_help_offset);
+	Cvar_RegisterVariable (&vr_wpn_pos_weight_2h_help_mult);
+	Cvar_RegisterVariable (&vr_wpn_dir_weight);
+	Cvar_RegisterVariable (&vr_wpn_dir_weight_offset);
+	Cvar_RegisterVariable (&vr_wpn_dir_weight_mult);
+	Cvar_RegisterVariable (&vr_wpn_dir_weight_2h_help_offset);
+	Cvar_RegisterVariable (&vr_wpn_dir_weight_2h_help_mult);
 	Cvar_RegisterVariable (&vr_gunangle);
 	Cvar_RegisterVariable (&vr_gunyaw);
 	Cvar_RegisterVariable (&vr_gun_z_offset);
@@ -1702,6 +1745,10 @@ void VR_XR_EndFrame (void)
 
 vr_hand_t vr_xr_hand[VR_HANDS];
 
+// Whether the previous frame produced a pose to blend from. Weapon weight has
+// nothing to lag behind on the first tracked frame, or after tracking drops.
+static qboolean xr_hand_pose_seen[VR_HANDS];
+
 static XrActionSet xr_action_set = XR_NULL_HANDLE;
 static XrPath	   xr_hand_path[VR_HANDS];
 
@@ -2236,6 +2283,129 @@ Blending is quakevr's: move toward the target at a fixed rate rather than
 snapping, so fingers do not pop between frames. (vr.cpp:3308-3341)
 ===============
 */
+/*
+===============
+XR_WeaponWeightFactor
+
+quakevr's VR_GetWeaponWeightFactorImpl (vr.cpp). aiming2H is 0 when the weapon
+is held in one hand and 1 when it is fully two-handed, and the two branches are
+lerped between so that bringing the second hand up steadies the weapon.
+
+Per-weapon Weight, Weight2HPosMult and Weight2HDirMult are 0.0, 1.0 and 1.0 for
+every weapon in quakevr -- InitWeaponCVars defaults them and no call overrides
+-- so they are those constants here. If per-weapon weights are ever wanted, this
+is where they multiply in.
+===============
+*/
+static float XR_WeaponWeightFactor (float aiming2h, float weight_offset, float weight_mult, float twoh_help_offset, float twoh_help_mult)
+{
+	const float wpn_weight = 0.0f;	  // WpnCVar::Weight
+	const float wpn_twoh_mult = 1.0f; // WpnCVar::Weight2H{Pos,Dir}Mult
+	float		initial, with_offset, with_mult, with_2h_offset, with_2h_mult, final_factor;
+
+	initial = 1.0f - wpn_weight;
+	with_offset = initial + weight_offset;
+	with_mult = with_offset * weight_mult;
+	with_2h_offset = with_offset + twoh_help_offset;
+	with_2h_mult = (with_2h_offset * twoh_help_mult) * wpn_twoh_mult;
+
+	final_factor = with_mult + (with_2h_mult - with_mult) * aiming2h;
+	return CLAMP (0.0f, final_factor, 1.0f);
+}
+
+/*
+===============
+XR_WeaponWeightBlend
+
+The factor, adjusted for frametime the way quakevr does it
+(VR_CalcWeaponWeightFTAdjusted): weight * frametime * 100. At 90fps and stock
+weights that lands just above 1, which is a complete blend -- no smoothing --
+so it is clamped rather than allowed to overshoot the target.
+===============
+*/
+static float XR_WeaponWeightBlend (qboolean is_dir)
+{
+	float factor, blend;
+
+	if (is_dir)
+		factor = XR_WeaponWeightFactor (
+			0.0f, vr_wpn_dir_weight_offset.value, vr_wpn_dir_weight_mult.value, vr_wpn_dir_weight_2h_help_offset.value,
+			vr_wpn_dir_weight_2h_help_mult.value);
+	else
+		factor = XR_WeaponWeightFactor (
+			0.0f, vr_wpn_pos_weight_offset.value, vr_wpn_pos_weight_mult.value, vr_wpn_pos_weight_2h_help_offset.value,
+			vr_wpn_pos_weight_2h_help_mult.value);
+
+	blend = factor * (float)(cl.time - cl.oldtime) * 100.0f;
+	return CLAMP (0.0f, blend, 1.0f);
+}
+
+/*
+===============
+XR_ApplyWeaponWeight
+
+Lags the hand behind the controller according to the weapon's weight.
+
+quakevr smooths cl.handpos, which is in world space, and therefore has to undo
+the player's own movement and yaw first -- that is what the rotate_point and
+lastPlayerTranslation work in vr.cpp:1908-1950 is for. Smoothing in tracking
+space instead makes all of that unnecessary: tracking space does not move with
+the player, so walking and turning cannot leak into the blend to begin with.
+===============
+*/
+static void XR_ApplyWeaponWeight (vr_hand_t *h, qboolean had_prev)
+{
+	float t;
+	int	  i;
+
+	if (!had_prev || cl.time <= cl.oldtime)
+	{
+		VectorCopy (h->pos, h->weighted_pos);
+		VectorCopy (h->aim_pos, h->weighted_aim_pos);
+		VectorCopy (h->aim_angles, h->weighted_aim_angles);
+		return;
+	}
+
+	if (vr_wpn_pos_weight.value == 1)
+	{
+		t = XR_WeaponWeightBlend (false);
+		for (i = 0; i < 3; i++)
+		{
+			h->weighted_pos[i] += (h->pos[i] - h->weighted_pos[i]) * t;
+			h->weighted_aim_pos[i] += (h->aim_pos[i] - h->weighted_aim_pos[i]) * t;
+		}
+	}
+	else
+	{
+		VectorCopy (h->pos, h->weighted_pos);
+		VectorCopy (h->aim_pos, h->weighted_aim_pos);
+	}
+
+	if (vr_wpn_dir_weight.value == 1)
+	{
+		t = XR_WeaponWeightBlend (true);
+		for (i = 0; i < 3; i++)
+		{
+			// shortest way round, so 359 -> 1 does not sweep the long way
+			float d = h->aim_angles[i] - h->weighted_aim_angles[i];
+			while (d > 180.0f)
+				d -= 360.0f;
+			while (d < -180.0f)
+				d += 360.0f;
+			h->weighted_aim_angles[i] += d * t;
+		}
+	}
+	else
+	{
+		VectorCopy (h->aim_angles, h->weighted_aim_angles);
+	}
+
+	// the weighted pose is what everything downstream should see
+	VectorCopy (h->weighted_pos, h->pos);
+	VectorCopy (h->weighted_aim_pos, h->aim_pos);
+	VectorCopy (h->weighted_aim_angles, h->aim_angles);
+}
+
 static void XR_UpdateFingers (int hand)
 {
 	vr_hand_t *h = &vr_xr_hand[hand];
@@ -2361,6 +2531,11 @@ void VR_XR_SyncInput (void)
 		// agree rather than drifting apart by a frame
 		h->tracked = XR_LocateHand (xr_pose_space[hand], xr_frame_state.predictedDisplayTime, h->pos, h->angles, h->velocity);
 		XR_LocateHand (xr_aim_space[hand], xr_frame_state.predictedDisplayTime, h->aim_pos, h->aim_angles, NULL);
+		// weight the pose before anything reads it, so the weapon, the hand
+		// models and the QC all see the same lagged pose rather than three
+		// different ones
+		XR_ApplyWeaponWeight (h, xr_hand_pose_seen[hand]);
+		xr_hand_pose_seen[hand] = h->tracked;
 		h->speed = sqrtf (h->velocity[0] * h->velocity[0] + h->velocity[1] * h->velocity[1] + h->velocity[2] * h->velocity[2]);
 
 		// throwing reads a rolling mean, not this frame's value
