@@ -3569,13 +3569,23 @@ qboolean VR_XR_SeatWeapon (entity_t *e, const vec3_t hand_pos, vec3_t out_origin
 	if (!vr_hand_grips_weapon.value || !e || !e->model || e->model->type != mod_alias)
 		return false;
 
-	w = VR_FindWpnOffset (e->model->name);
-
-	extra[0] = w ? w->hand_x : 0.0f;
-	extra[1] = w ? w->hand_y : 0.0f;
-	extra[2] = w ? w->hand_z : 0.0f;
-	if (e->horizFlip)
-		extra[1] = -extra[1];
+	// quakevr's per-weapon hand offsets are only meaningful against quakevr's
+	// per-weapon anchor vertex, and this uses a mesh search instead. Pairing
+	// one with the other is what left the hand five units off before; the same
+	// mismatch here shoves the weapon sideways by a couple of units. They are
+	// used only when a vertex is pinned by hand, which is the case where the
+	// anchor is quakevr's again and the pair is whole.
+	if ((int)vr_grip_vertex.value >= 0)
+	{
+		w = VR_FindWpnOffset (e->model->name);
+		extra[0] = w ? w->hand_x : 0.0f;
+		extra[1] = w ? w->hand_y : 0.0f;
+		extra[2] = w ? w->hand_z : 0.0f;
+		if (e->horizFlip)
+			extra[1] = -extra[1];
+	}
+	else
+		extra[0] = extra[1] = extra[2] = 0.0f;
 
 	// where the grip currently is, with the entity at the hand
 	VectorCopy (hand_pos, e->origin);
