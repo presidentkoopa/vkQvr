@@ -1641,19 +1641,31 @@ static void XR_QuatToQuakeAngles (const XrQuaternionf *q, float out_angles[3])
 	out_angles[0] = -RAD2DEG (asinf (CLAMP (-1.0f, fwd[2], 1.0f))); // pitch, inverted
 
 	{
-		// Roll must come from atan2, not asin. asin is limited to +-90 and is
-		// symmetric, so a 120-degree wrist roll reports 60 and rolling further
-		// makes the weapon rotate backwards -- and because the model offset is
-		// rotated by this, a wrong roll also translates the gun.
-		// quakevr uses atan2 for the same reason (vr.cpp:404-405).
+		// Roll is the angle of the head's up vector about the forward axis, so
+		// it has to be measured against a roll-free frame built for THIS
+		// forward -- not against world up.
+		//
+		// Using world up (up[2]) works only while looking level. Pitch the head
+		// down and the roll-free up swings toward horizontal, so its world-Z
+		// component collapses to zero, and atan2 against a vanishing reference
+		// swings wildly: the whole view appears to skew left and right as you
+		// look down.
+		//
+		// left is the horizontal left for this yaw, and cross(fwd, left) is the
+		// up that goes with it, upright at level pitch and horizontal when
+		// looking straight down. Roll then falls out cleanly at any pitch.
+		//
+		// atan2 rather than asin for the reason quakevr gives (vr.cpp:404-405):
+		// asin saturates at +-90 and is symmetric, so a 120-degree roll would
+		// report 60 and rolling further would run backwards.
 		const float sy = sinf (DEG2RAD (out_angles[1]));
 		const float cy = cosf (DEG2RAD (out_angles[1]));
 		const float left[3] = {-sy, cy, 0.0f};
-		// "up" resolved against the roll-free left and world-up axes
-		const float dot_left = up[0] * left[0] + up[1] * left[1] + up[2] * left[2];
-		const float dot_up = up[2];
+		float		roll_free_up[3];
 
-		out_angles[2] = -RAD2DEG (atan2f (dot_left, dot_up));
+		CrossProduct (fwd, left, roll_free_up);
+
+		out_angles[2] = -RAD2DEG (atan2f (DotProduct (up, left), DotProduct (up, roll_free_up)));
 	}
 }
 
@@ -4678,9 +4690,9 @@ everything that is not a plain MDL.
 */
 /*
 ===============
-XR_FindGripPoint
+XR_FindGripPointIndex
 
-Where a weapon's grip is, in the model's own raw vertex coordinates.
+Which vertex of a weapon is its grip.
 
 There is no answer to lift from quakevr here. Its HandAnchorVertex defaults to
 0 for every weapon and no InitWeaponCVars call overrides it, but vertex 0 is
@@ -4697,16 +4709,13 @@ weapons all share that shape, whether shotgun, axe or nailgun.
 Cached per model, since it depends only on the mesh.
 ===============
 */
-static void XR_FindGripPoint (aliashdr_t *hdr, vec3_t out_raw)
+static int XR_FindGripPointIndex (aliashdr_t *hdr)
 {
-	float min_x, max_x, cutoff, min_z, max_z, z_cutoff, sum[3];
-	int	  i, count;
+	float min_x, max_x, cutoff, min_z, max_z, z_cutoff, sum[3], best_d;
+	int	  i, count, best;
 
 	if (hdr->gripvalid)
-	{
-		VectorCopy (hdr->grippoint, out_raw);
-		return;
-	}
+		return hdr->gripvert;
 
 	min_x = max_x = (float)hdr->anchorverts[0].v[0];
 	for (i = 1; i < hdr->numverts; i++)
@@ -4737,10 +4746,9 @@ static void XR_FindGripPoint (aliashdr_t *hdr, vec3_t out_raw)
 	}
 	z_cutoff = min_z + (max_z - min_z) * 0.5f;
 
-	// Average them rather than taking the extreme. The lowest vertex is on the
-	// outer surface by definition -- the bottom edge of the stock -- and a hand
-	// anchored there hangs off the gun instead of closing around it. The mean
-	// of the region sits inside the grip, where a fist actually goes.
+	// Average the region rather than taking an extreme. The lowest vertex is
+	// on the outer surface by definition -- the bottom edge of the stock -- and
+	// a hand anchored there hangs off the gun instead of closing around it.
 	sum[0] = sum[1] = sum[2] = 0.0f;
 	count = 0;
 	for (i = 0; i < hdr->numverts; i++)
@@ -4755,21 +4763,40 @@ static void XR_FindGripPoint (aliashdr_t *hdr, vec3_t out_raw)
 		count++;
 	}
 
+	// Then keep the real vertex nearest that average, rather than the average
+	// itself. A vertex index can be looked up again in whatever pose the model
+	// is drawn in this frame, so the grip follows the firing animation; a bare
+	// point could only ever describe the rest pose.
+	best = 0;
+	best_d = 1e30f;
 	if (count > 0)
 	{
-		hdr->grippoint[0] = sum[0] / (float)count;
-		hdr->grippoint[1] = sum[1] / (float)count;
-		hdr->grippoint[2] = sum[2] / (float)count;
-	}
-	else
-	{
-		hdr->grippoint[0] = (float)hdr->anchorverts[0].v[0];
-		hdr->grippoint[1] = (float)hdr->anchorverts[0].v[1];
-		hdr->grippoint[2] = (float)hdr->anchorverts[0].v[2];
+		const float cx = sum[0] / (float)count;
+		const float cy = sum[1] / (float)count;
+		const float cz = sum[2] / (float)count;
+
+		for (i = 0; i < hdr->numverts; i++)
+		{
+			float dx, dy, dz, d;
+			if ((float)hdr->anchorverts[i].v[0] > cutoff)
+				continue;
+			if ((float)hdr->anchorverts[i].v[2] > z_cutoff)
+				continue;
+			dx = (float)hdr->anchorverts[i].v[0] - cx;
+			dy = (float)hdr->anchorverts[i].v[1] - cy;
+			dz = (float)hdr->anchorverts[i].v[2] - cz;
+			d = dx * dx + dy * dy + dz * dz;
+			if (d < best_d)
+			{
+				best_d = d;
+				best = i;
+			}
+		}
 	}
 
+	hdr->gripvert = best;
 	hdr->gripvalid = true;
-	VectorCopy (hdr->grippoint, out_raw);
+	return best;
 }
 
 static qboolean XR_AliasVertexWorldPos (entity_t *e, int vertex_index, const vec3_t extra_offsets, vec3_t out)
@@ -4777,6 +4804,7 @@ static qboolean XR_AliasVertexWorldPos (entity_t *e, int vertex_index, const vec
 	aliashdr_t *hdr;
 	vec3_t		fwd, right, up, local, v, raw;
 	float		pitch_flipped[3];
+
 	int			i;
 
 	if (!e || !e->model || e->model->type != mod_alias)
@@ -4787,17 +4815,24 @@ static qboolean XR_AliasVertexWorldPos (entity_t *e, int vertex_index, const vec
 		return false;
 
 	if (vertex_index < 0)
-	{
-		XR_FindGripPoint (hdr, raw);
-	}
-	else
-	{
-		vertex_index = CLAMP (0, vertex_index, hdr->numverts - 1);
-		raw[0] = (float)hdr->anchorverts[vertex_index].v[0];
-		raw[1] = (float)hdr->anchorverts[vertex_index].v[1];
-		raw[2] = (float)hdr->anchorverts[vertex_index].v[2];
-	}
+		vertex_index = XR_FindGripPointIndex (hdr);
 
+	vertex_index = CLAMP (0, vertex_index, hdr->numverts - 1);
+
+	// Read that vertex from the pose the weapon is actually drawn in this
+	// frame, not from the rest pose. A firing animation moves the grip -- that
+	// is what a kick is -- and reading a fixed pose leaves the hand behind
+	// while the weapon recoils out of it.
+	{
+		lerpdata_t ld;
+		int		   pose;
+		R_SetupAliasFrame (e, hdr, &ld);
+		pose = CLAMP (0, ld.pose1, hdr->numposes - 1);
+
+		raw[0] = (float)hdr->anchorverts[(size_t)pose * hdr->numverts + vertex_index].v[0];
+		raw[1] = (float)hdr->anchorverts[(size_t)pose * hdr->numverts + vertex_index].v[1];
+		raw[2] = (float)hdr->anchorverts[(size_t)pose * hdr->numverts + vertex_index].v[2];
+	}
 	// the vertex in model space, then the model's own transform
 	for (i = 0; i < 3; i++)
 		v[i] = raw[i] * hdr->scale[i] + hdr->scale_origin[i] + extra_offsets[i];
@@ -5121,13 +5156,21 @@ void VR_XR_SetupBodyEntities (void)
 
 	// the torso hangs from the head, so it ducks when the player physically
 	// crouches (quakevr view.cpp:1245)
-	// The multiplier is quakevr's, and it expects metres: VR_GetHeadOrigin
-	// returns the raw tracked head position untouched by meters_to_units, which
-	// is applied separately to the movement delta (vr.cpp:2672). Converting back
-	// therefore has to remove vr_floor_offset as well, since that is baked into
-	// the stored height and is not part of how far the head is off the floor.
-	head_height = xr_head_pos_valid ? xr_last_head_pos[2] : 0.0f;
-	head_height = (head_height - vr_floor_offset.value) / VR_METERS_TO_UNITS;
+	// quakevr multiplies a head height by vr_vrtorso_head_z_mult
+	// (view.cpp:1245), and its VR_GetHeadOrigin is in metres, so the faithful
+	// conversion also removes vr_floor_offset. Doing exactly that puts the
+	// torso above the head here: player_origin + 39 against a head at
+	// player_origin + 33.
+	//
+	// The reason is that quakevr's 32 is Quake's native units per metre, while
+	// this runs at 26.25, and the two disagree by more than vr_vrtorso_z_offset
+	// can absorb. Leaving the floor offset in scales the head height by the
+	// ratio between them and lands the torso at chest height, which is where a
+	// torso goes.
+	//
+	// Deliberately not quakevr's arithmetic, because quakevr's arithmetic does
+	// not survive the change of world scale.
+	head_height = xr_head_pos_valid ? (xr_last_head_pos[2] / VR_METERS_TO_UNITS) : 0.0f;
 	cl.vrtorso.origin[2] += head_height * vr_vrtorso_head_z_mult.value;
 }
 

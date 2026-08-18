@@ -381,7 +381,7 @@ typedef struct aliashdr_s
 	// moves across a weapon's animation. NULL when not kept.
 	trivertx_t		   *anchorverts;
 	// Cached result of the grip search over anchorverts.
-	vec3_t				grippoint;
+	int					gripvert;
 	qboolean			gripvalid;
 	int					numindexes;
 	int					numverts_vbo;

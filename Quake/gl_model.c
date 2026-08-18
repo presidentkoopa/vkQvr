@@ -3869,16 +3869,20 @@ static void Mod_CalcAliasBounds (qmodel_t *mod, aliashdr_t *a, int numvertexes, 
 	{
 	case PV_QUAKE1:
 	{
-		// VR: keep pose 0 on the CPU so a hand can be anchored to a vertex of
-		// the model it is holding. The real vertex data goes to the GPU and the
-		// file buffer is released, so without this there is nothing left to
-		// read. Pose 0 alone is enough: a grip point does not travel far across
-		// a weapon's animation, and one pose costs numverts * 4 bytes.
+		// VR: keep the poses on the CPU so a hand can be anchored to a vertex
+		// of the model it is holding. The real vertex data goes to the GPU and
+		// the file buffer is released, so without this there is nothing left to
+		// read at runtime.
+		//
+		// Every pose, not just the first. A firing animation moves the grip --
+		// that is what a kick is -- and anchoring to a fixed pose leaves the
+		// hand behind while the weapon recoils out of it.
 		if (a->numposes > 0 && a->numverts > 0)
 		{
-			a->anchorverts = (trivertx_t *)Mem_Alloc (sizeof (trivertx_t) * a->numverts);
+			a->anchorverts = (trivertx_t *)Mem_Alloc (sizeof (trivertx_t) * (size_t)a->numverts * a->numposes);
 			a->gripvalid = false;
-			memcpy (a->anchorverts, poseverts[0], sizeof (trivertx_t) * a->numverts);
+			for (int p = 0; p < a->numposes; p++)
+				memcpy (a->anchorverts + (size_t)p * a->numverts, poseverts[p], sizeof (trivertx_t) * a->numverts);
 		}
 
 		// process verts
