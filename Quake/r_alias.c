@@ -130,6 +130,13 @@ static void GL_DrawAliasFrame (
 			vulkan_globals.alias_wboit_pipelines[pipeline_index], vulkan_globals.alias_mboit_moment_pipelines[pipeline_index],
 			vulkan_globals.alias_mboit_composite_pipelines[pipeline_index]);
 
+	// VR: a mirrored model reverses winding, so it needs the no-cull variant.
+	// Only the plain opaque standard-pass case is covered, which is what the
+	// hands are; anything else falls through and simply draws unmirrored rather
+	// than drawing wrong.
+	if (e->horizFlip && pipeline_index == 0 && cbx->render_pass_index == 0)
+		pipeline = vulkan_globals.alias_mirror_pipeline;
+
 	R_BindPipeline (cbx, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
 
 	float blend;
@@ -519,6 +526,16 @@ void R_DrawAliasModel (cb_context_t *cbx, entity_t *e, int *aliaspolys)
 	float model_matrix[16];
 	IdentityMatrix (model_matrix);
 	R_RotateForEntity (model_matrix, lerpdata.origin, lerpdata.angles, e->netstate.scale);
+	// VR: mirror on Y, immediately after the entity rotation and before the
+	// model's own offset and scale -- the same order quakevr uses
+	// (r_alias.cpp:1208, glScalef(1,-1,1) right after R_RotateForEntity).
+	if (e->horizFlip)
+	{
+		float flip_matrix[16];
+		ScaleMatrix (flip_matrix, 1.0f, -1.0f, 1.0f);
+		MatrixMultiply (model_matrix, flip_matrix);
+	}
+
 
 	float fovscale = 1.0f;
 	// VR: the gun is placed in world space by the hand pose, so this widescreen
@@ -649,6 +666,16 @@ void R_DrawAliasModel_ShowTris (cb_context_t *cbx, entity_t *e)
 	float model_matrix[16];
 	IdentityMatrix (model_matrix);
 	R_RotateForEntity (model_matrix, lerpdata.origin, lerpdata.angles, e->netstate.scale);
+	// VR: mirror on Y, immediately after the entity rotation and before the
+	// model's own offset and scale -- the same order quakevr uses
+	// (r_alias.cpp:1208, glScalef(1,-1,1) right after R_RotateForEntity).
+	if (e->horizFlip)
+	{
+		float flip_matrix[16];
+		ScaleMatrix (flip_matrix, 1.0f, -1.0f, 1.0f);
+		MatrixMultiply (model_matrix, flip_matrix);
+	}
+
 
 	float fovscale = 1.0f;
 	// VR: the gun is positioned in world space by the hand pose, so this
@@ -700,6 +727,16 @@ void R_DrawAliasModel_ShowSkel (cb_context_t *cbx, entity_t *e)
 	float model_matrix[16];
 	IdentityMatrix (model_matrix);
 	R_RotateForEntity (model_matrix, lerpdata.origin, lerpdata.angles, e->netstate.scale);
+	// VR: mirror on Y, immediately after the entity rotation and before the
+	// model's own offset and scale -- the same order quakevr uses
+	// (r_alias.cpp:1208, glScalef(1,-1,1) right after R_RotateForEntity).
+	if (e->horizFlip)
+	{
+		float flip_matrix[16];
+		ScaleMatrix (flip_matrix, 1.0f, -1.0f, 1.0f);
+		MatrixMultiply (model_matrix, flip_matrix);
+	}
+
 
 	float fovscale = 1.0f;
 	// VR: the gun is positioned in world space by the hand pose, so this

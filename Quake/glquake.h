@@ -430,6 +430,12 @@ typedef struct
 	vulkan_pipeline_t		 sky_layer_pipeline[MAIN_RENDER_PASS_VARIANT_COUNT][2];
 	vulkan_pipeline_t		 alias_pipelines[MAIN_RENDER_PASS_VARIANT_COUNT][MODEL_PIPELINE_COUNT];
 	vulkan_pipeline_t		 alias_wboit_pipelines[MODEL_PIPELINE_COUNT];
+	// VR: opaque alias variant with culling off, for models drawn mirrored.
+	// A mirror reverses triangle winding, and Vulkan bakes cull mode and front
+	// face into the pipeline, so the state cannot simply be flipped mid-frame as
+	// quakevr does with glFrontFace. Culling nothing renders a closed opaque
+	// mesh identically -- the depth test already keeps the nearest surface.
+	vulkan_pipeline_t		 alias_mirror_pipeline;
 	vulkan_pipeline_t		 alias_mboit_moment_pipelines[MODEL_PIPELINE_COUNT];
 	vulkan_pipeline_t		 alias_mboit_composite_pipelines[MODEL_PIPELINE_COUNT];
 	vulkan_pipeline_t		 md5_pipelines[MAIN_RENDER_PASS_VARIANT_COUNT][MODEL_PIPELINE_COUNT];

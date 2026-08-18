@@ -130,6 +130,11 @@ cvar_t vr_hand_scale = {"vr_hand_scale", "0.38", CVAR_ARCHIVE};
 
 cvar_t vr_gunangle = {"vr_gunangle", "0", CVAR_ARCHIVE};
 cvar_t vr_gunyaw = {"vr_gunyaw", "0", CVAR_ARCHIVE};
+// Roll to go with the pitch and yaw. quakevr needs only two axes because its
+// controller pose and its models share a frame; the OpenXR aim pose is a
+// pointing ray with its own roll about the barrel, so the third axis is needed
+// to seat the models in the hand.
+cvar_t vr_gunroll = {"vr_gunroll", "0", CVAR_ARCHIVE};
 cvar_t vr_gun_z_offset = {"vr_gun_z_offset", "0", CVAR_ARCHIVE};
 /*
 ================================================================================
@@ -462,6 +467,7 @@ void VR_XR_Init (void)
 	Cvar_RegisterVariable (&vr_hand_scale);
 	Cvar_RegisterVariable (&vr_gunangle);
 	Cvar_RegisterVariable (&vr_gunyaw);
+	Cvar_RegisterVariable (&vr_gunroll);
 	Cvar_RegisterVariable (&vr_gun_z_offset);
 
 	Cvar_RegisterVariable (&vr_shoulder_offset_x);
@@ -3138,10 +3144,21 @@ qboolean VR_XR_WeaponPose (const vec3_t player_origin, vec3_t out_origin, vec3_t
 
 	// Head-relative in XY, absolute in Z -- same basis as the camera and the QC
 	// hand positions, so all three agree wherever the player stands.
-	local[0] = h->aim_pos[0] - xr_last_head_pos[0] + vr_gun_offset_x.value;
-	local[1] = h->aim_pos[1] - xr_last_head_pos[1] + vr_gun_offset_y.value;
-	local[2] = h->aim_pos[2] + vr_gun_offset_z.value;
-
+	// Position from the grip pose, orientation from the aim pose.
+	//
+	// These are two different points on the controller. Grip is the centroid of
+	// the palm, which is where the hand actually is and therefore where the
+	// hand models are placed by XR_HandToWorld; aim is a pointing ray whose
+	// origin sits forward of it, centimetres away on an Index controller. Using
+	// aim for position too put the weapon that far outside the hand holding it.
+	//
+	// quakevr never has to make this choice: OpenVR exposes a single controller
+	// pose and cl.handpos is the one position everything uses. Taking position
+	// from grip is the faithful equivalent -- and aim is still the right source
+	// for orientation, being the analogue of quakevr's pose plus vr_gunangle.
+	local[0] = h->pos[0] - xr_last_head_pos[0] + vr_gun_offset_x.value;
+	local[1] = h->pos[1] - xr_last_head_pos[1] + vr_gun_offset_y.value;
+	local[2] = h->pos[2] + vr_gun_offset_z.value;
 	yaw = DEG2RAD (cl.viewangles[YAW]);
 	s = sinf (yaw);
 	c = cosf (yaw);
@@ -3169,6 +3186,7 @@ qboolean VR_XR_WeaponPose (const vec3_t player_origin, vec3_t out_origin, vec3_t
 	out_angles[YAW] += cl.viewangles[YAW];
 	out_angles[PITCH] -= vr_gunangle.value;
 	out_angles[YAW] += vr_gunyaw.value;
+	out_angles[ROLL] += vr_gunroll.value;
 
 	// Keep the barrel out of walls before the pitch is flipped for drawing,
 	// since the collision sweep needs a real direction.
@@ -3697,6 +3715,7 @@ static void XR_HandToWorld (const vr_hand_t *h, const vec3_t player_origin, vec3
 	out_angles[YAW] += cl.viewangles[YAW];
 	out_angles[PITCH] -= vr_gunangle.value;
 	out_angles[YAW] += vr_gunyaw.value;
+	out_angles[ROLL] += vr_gunroll.value;
 
 	out_vel[0] = h->velocity[0] * c - h->velocity[1] * s;
 	out_vel[1] = h->velocity[0] * s + h->velocity[1] * c;
@@ -4313,6 +4332,9 @@ static void XR_SetupHandEntity (int hand, const vec3_t player_origin)
 	// Without this the model is scaled to nothing: these entities live in cl,
 	// which is memset on connect, and ENTSCALE_DECODE(0) is 0.
 	palm->netstate.scale = ENTSCALE_DEFAULT;
+	// One hand model serves both hands, mirrored on Y for the off hand -- the
+	// same thing quakevr does with horizFlip (r_alias.cpp:1208).
+	palm->horizFlip = (hand == VR_XR_OffHand ());
 
 	for (i = 0; i < 5; i++)
 	{
@@ -4330,6 +4352,7 @@ static void XR_SetupHandEntity (int hand, const vec3_t player_origin)
 		f->colormap = vid.colormap;
 		f->alpha = ENTALPHA_DEFAULT;
 		f->netstate.scale = ENTSCALE_DEFAULT;
+		f->horizFlip = palm->horizFlip;
 	}
 }
 
