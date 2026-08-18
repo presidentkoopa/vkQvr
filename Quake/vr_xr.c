@@ -5399,8 +5399,19 @@ static void XR_SetupHandEntity (int hand, const vec3_t player_origin)
 		// vr_wofs_hand_x/y/z_nn). VR_GetWpnHandOffsets feeds extraOffsets,
 		// applied inside the weapon's model frame (view.cpp:1436, 1446).
 		// Y mirrors with the hand.
-		if (av < 0 && w && w->hand_av >= 0)
-			av = w->hand_av;
+		// Deliberately NOT defaulting to w->hand_av.
+		//
+		// quakevr's shipped hand_av for v_shot is 165, and that model has no
+		// duplicated vertices (numverts_vbo == numverts == 219), so it maps
+		// straight through to MDL 165 -- which sits at X=32.4 on a model
+		// spanning 0.1 to 33.2. That is the muzzle, and a hand placed there was
+		// already tried and rejected in the headset; the mesh search's
+		// rear-of-stock answer is what looked right.
+		//
+		// So either hand_av means something other than "the vertex the hand
+		// sits on", or it is consumed through a path this port does not
+		// reproduce. Until that is understood the numbers stay in the table but
+		// are not trusted; vr_grip_vertex still pins one by hand.
 
 		extra[0] = w ? w->hand_x : vr_hand_offset_x.value;
 		extra[1] = w ? w->hand_y : vr_hand_offset_y.value;

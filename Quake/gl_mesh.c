@@ -343,6 +343,14 @@ void GLMesh_DeleteMeshBuffers (aliashdr_t *mainhdr)
 		hdr->joints_set = VK_NULL_HANDLE;
 		for (int i = 0; i < MAX_SKINS; ++i)
 			SAFE_FREE (hdr->texels[i]);
+
+		// VR: the CPU-side copies kept for hand-to-weapon grip anchoring. Both
+		// are Mem_Alloc'd at load, so without this every map change leaks a
+		// copy of every alias model's vertices.
+		SAFE_FREE (hdr->anchorverts);
+		SAFE_FREE (hdr->vbo_to_mdl);
+		hdr->num_vbo_to_mdl = 0;
+		hdr->gripvalid = false;
 	}
 }
 
