@@ -253,6 +253,9 @@ typedef struct
 	// upper, in QVR_HS order. quakevr draws legholster.mdl at each
 	// (view.cpp V_SetupHolsterSlotViewEnt).
 	entity_t vrlegholster[4];
+	// Weapon-mounted buttons, one per hand: a control on the weapon that the
+	// other hand presses. (quakevr client.hpp:265-266)
+	entity_t vrwpnbutton[2];
 	entity_t offhand_viewent;	 // second weapon, for dual wielding
 
 	entity_t *entities; // spike -- moved into here

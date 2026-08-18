@@ -5681,6 +5681,109 @@ Positions come from VR_XR_HolsterSpot, so a holster is drawn exactly where the
 hand has to reach to trigger it.
 ===============
 */
+/*
+===============
+XR_SetupWeaponButtons
+
+A control mounted on the weapon that the other hand reaches over and presses --
+quakevr's V_SetupWpnButtonViewEnt and VR_DoWpnButton (view.cpp:1557,
+vr.cpp:3086). Ten of the shipped weapons declare one, with real anchor vertices.
+
+The button sits at the weapon's WpnButtonAnchorVertex plus its button offsets,
+carries the hand's rotation plus the button's own angles, and is hidden when the
+weapon's WpnButtonMode is None.
+
+Pressing it is a proximity test against the other hand's fingertip, not a
+trigger: quakevr offsets that hand forward 2 and down 2.5 to approximate where
+a fingertip is, and fires on the rising edge of coming within 2.7 units. The
+0.2 second throttle is quakevr's too, and stops a hand resting on the button
+from repeating.
+===============
+*/
+static void XR_SetupWeaponButtons (void)
+{
+	static float	last_time[2] = {0.0f, 0.0f};
+	static qboolean hover[2] = {false, false};
+	static qboolean prev_hover[2] = {false, false};
+
+	const int main_hand = VR_XR_MainHand ();
+	int		  i;
+
+	for (i = 0; i < 2; i++)
+	{
+		const qboolean is_main = (i == 0);
+		const int	   hand = is_main ? main_hand : (main_hand ^ 1);
+		const int	   other = hand ^ 1;
+		entity_t	  *wpn = is_main ? &cl.viewent : &cl.offhand_viewent;
+		entity_t	  *btn = &cl.vrwpnbutton[i];
+		vec3_t		   pos, extra, ang, other_pos, other_ang, other_vel, fwd, right, up, tip, d;
+		int			   slot, av;
+
+		btn->model = NULL;
+
+		if (!wpn->model || wpn->model->type != mod_alias)
+			continue;
+
+		slot = VR_WpnSlotForModel (wpn->model->name);
+		if (slot < 0)
+			continue;
+
+		// mode 0 is None: this weapon has no button
+		if (VR_WpnCVarValue (slot, WPNCV_WPNBTNMODE) == 0.0f)
+			continue;
+
+		av = (int)VR_WpnCVarValue (slot, WPNCV_WPNBTN_AV);
+		extra[0] = VR_WpnCVarValue (slot, WPNCV_WPNBTN_X);
+		extra[1] = VR_WpnCVarValue (slot, WPNCV_WPNBTN_Y);
+		extra[2] = VR_WpnCVarValue (slot, WPNCV_WPNBTN_Z);
+
+		if (!XR_AliasVertexWorldPos (wpn, av, extra, pos))
+			continue;
+
+		VectorCopy (pos, btn->origin);
+
+		ang[PITCH] = VR_WpnCVarValue (slot, WPNCV_WPNBTN_PITCH);
+		ang[YAW] = VR_WpnCVarValue (slot, WPNCV_WPNBTN_YAW);
+		ang[ROLL] = VR_WpnCVarValue (slot, WPNCV_WPNBTN_ROLL);
+		if (!is_main)
+			ang[ROLL] = -ang[ROLL];
+
+		btn->angles[PITCH] = wpn->angles[PITCH] + ang[PITCH];
+		btn->angles[YAW] = wpn->angles[YAW] + ang[YAW];
+		btn->angles[ROLL] = wpn->angles[ROLL] + ang[ROLL];
+
+		btn->model = Mod_ForName ("progs/wpnbutton.mdl", false);
+		btn->frame = 0;
+		btn->colormap = vid.colormap;
+		btn->alpha = ENTALPHA_DEFAULT;
+		btn->netstate.scale = ENTSCALE_DEFAULT;
+		btn->horizFlip = !is_main;
+
+		// the other hand's fingertip, approximated as quakevr does
+		if (!vr_xr_hand[other].tracked || cl.viewentity <= 0 || cl.viewentity >= cl.max_edicts || !cl.entities)
+			continue;
+
+		XR_HandToWorld (&vr_xr_hand[other], cl.entities[cl.viewentity].origin, other_pos, other_ang, other_vel);
+		AngleVectors (other_ang, fwd, right, up);
+		VectorMA (other_pos, 2.0f, fwd, tip);
+		VectorMA (tip, -2.5f, up, tip);
+
+		if ((cl.time - last_time[i]) <= 0.2)
+			continue;
+
+		VectorSubtract (tip, btn->origin, d);
+		prev_hover[i] = hover[i];
+		hover[i] = (VectorLength (d) < 2.7f);
+		last_time[i] = cl.time;
+
+		// rising edge only, so resting a hand on it does not repeat
+		if (!prev_hover[i] && hover[i])
+			Key_Event (is_main ? '8' : '7', true);
+		else if (prev_hover[i] && !hover[i])
+			Key_Event (is_main ? '8' : '7', false);
+	}
+}
+
 static void XR_SetupHolsterSlots (void)
 {
 	static const int	  hotspots[4] = {QVR_HS_LEFT_HIP_HOLSTER, QVR_HS_RIGHT_HIP_HOLSTER, QVR_HS_LEFT_UPPER_HOLSTER, QVR_HS_RIGHT_UPPER_HOLSTER};
@@ -5944,6 +6047,7 @@ void VR_XR_SetupBodyEntities (void)
 
 	XR_SetupOffHandWeapon (player->origin);
 	XR_SetupHolsterSlots ();
+	XR_SetupWeaponButtons ();
 
 	// --- torso (quakevr V_SetupVRTorsoViewEnt, view.cpp:1222-1249) ---
 	if (!vr_vrtorso_enabled.value)
