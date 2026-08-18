@@ -362,7 +362,12 @@ cvar_t vr_verbosebots = {"vr_verbosebots", "0", CVAR_ARCHIVE};
 // the controller. Zeroed, so the palm sits on the anchor. The per-finger terms
 // below are kept, since those arrange fingers around the palm and do not depend
 // on where the palm is.
-cvar_t vr_fingers_and_base_x = {"vr_fingers_and_base_x", "0", CVAR_ARCHIVE};
+// A small forward nudge so the grip settles into the palm rather than at its
+// back edge. X is forward along the hand in redirectVector's frame. This is the
+// one composition term that is not zero, and it is dialled by eye rather than
+// taken from quakevr, whose value here compensates for scaling this port does
+// not do.
+cvar_t vr_fingers_and_base_x = {"vr_fingers_and_base_x", "2", CVAR_ARCHIVE};
 cvar_t vr_fingers_and_base_y = {"vr_fingers_and_base_y", "0", CVAR_ARCHIVE};
 cvar_t vr_fingers_and_base_z = {"vr_fingers_and_base_z", "0", CVAR_ARCHIVE};
 
@@ -371,10 +376,23 @@ cvar_t vr_fingers_and_base_offhand_x = {"vr_fingers_and_base_offhand_x", "0", CV
 cvar_t vr_fingers_and_base_offhand_y = {"vr_fingers_and_base_offhand_y", "0", CVAR_ARCHIVE};
 cvar_t vr_fingers_and_base_offhand_z = {"vr_fingers_and_base_offhand_z", "0.0", CVAR_ARCHIVE};
 
-// all five fingers as a group, not the palm
-cvar_t vr_fingers_x = {"vr_fingers_x", "-5.05", CVAR_ARCHIVE};
-cvar_t vr_fingers_y = {"vr_fingers_y", "-0.1", CVAR_ARCHIVE};
-cvar_t vr_fingers_z = {"vr_fingers_z", "-0.1875", CVAR_ARCHIVE};
+// All five fingers as a group, and each one after it.
+//
+// quakevr's shipped values are zeroed for the same reason
+// vr_fingers_and_base_* is: they exist to compensate for its non-uniform model
+// scaling, where scale_origin keeps full size while geometry shrinks and the
+// hand comes apart. This scales uniformly, so each model's own scale_origin
+// already places it correctly against the palm -- hand_base sits at -7.0 on X
+// and the fingers at 0.0, and that difference IS the finger placement.
+//
+// Applying quakevr's offsets on top double-counts. vr_fingers_x of -5.05 in
+// particular drags all five fingers five units behind the palm, which is the
+// separation seen in the headset. Measured with uniform scaling and no offsets
+// the palm centres at (-0.18, -0.12, 0.60) and the fingers at (2.46, ...),
+// just forward of it, which is a hand.
+cvar_t vr_fingers_x = {"vr_fingers_x", "0", CVAR_ARCHIVE};
+cvar_t vr_fingers_y = {"vr_fingers_y", "0", CVAR_ARCHIVE};
+cvar_t vr_fingers_z = {"vr_fingers_z", "0", CVAR_ARCHIVE};
 
 // the palm alone
 cvar_t vr_finger_base_x = {"vr_finger_base_x", "0", CVAR_ARCHIVE};
@@ -382,21 +400,21 @@ cvar_t vr_finger_base_y = {"vr_finger_base_y", "0.0", CVAR_ARCHIVE};
 cvar_t vr_finger_base_z = {"vr_finger_base_z", "0.0", CVAR_ARCHIVE};
 
 // and one finger at a time
-cvar_t vr_finger_thumb_x = {"vr_finger_thumb_x", "-0.3625", CVAR_ARCHIVE};
-cvar_t vr_finger_thumb_y = {"vr_finger_thumb_y", "3.2625", CVAR_ARCHIVE};
-cvar_t vr_finger_thumb_z = {"vr_finger_thumb_z", "-1.9375", CVAR_ARCHIVE};
-cvar_t vr_finger_index_x = {"vr_finger_index_x", "-0.325", CVAR_ARCHIVE};
-cvar_t vr_finger_index_y = {"vr_finger_index_y", "0.6125", CVAR_ARCHIVE};
-cvar_t vr_finger_index_z = {"vr_finger_index_z", "-1.825", CVAR_ARCHIVE};
-cvar_t vr_finger_middle_x = {"vr_finger_middle_x", "-0.3625", CVAR_ARCHIVE};
-cvar_t vr_finger_middle_y = {"vr_finger_middle_y", "0.5125", CVAR_ARCHIVE};
-cvar_t vr_finger_middle_z = {"vr_finger_middle_z", "-0.3125", CVAR_ARCHIVE};
-cvar_t vr_finger_ring_x = {"vr_finger_ring_x", "-0.3625", CVAR_ARCHIVE};
-cvar_t vr_finger_ring_y = {"vr_finger_ring_y", "0.7", CVAR_ARCHIVE};
-cvar_t vr_finger_ring_z = {"vr_finger_ring_z", "0.65", CVAR_ARCHIVE};
-cvar_t vr_finger_pinky_x = {"vr_finger_pinky_x", "-0.325", CVAR_ARCHIVE};
-cvar_t vr_finger_pinky_y = {"vr_finger_pinky_y", "1.15", CVAR_ARCHIVE};
-cvar_t vr_finger_pinky_z = {"vr_finger_pinky_z", "1.6375", CVAR_ARCHIVE};
+cvar_t vr_finger_thumb_x = {"vr_finger_thumb_x", "0", CVAR_ARCHIVE};
+cvar_t vr_finger_thumb_y = {"vr_finger_thumb_y", "0", CVAR_ARCHIVE};
+cvar_t vr_finger_thumb_z = {"vr_finger_thumb_z", "0", CVAR_ARCHIVE};
+cvar_t vr_finger_index_x = {"vr_finger_index_x", "0", CVAR_ARCHIVE};
+cvar_t vr_finger_index_y = {"vr_finger_index_y", "0", CVAR_ARCHIVE};
+cvar_t vr_finger_index_z = {"vr_finger_index_z", "0", CVAR_ARCHIVE};
+cvar_t vr_finger_middle_x = {"vr_finger_middle_x", "0", CVAR_ARCHIVE};
+cvar_t vr_finger_middle_y = {"vr_finger_middle_y", "0", CVAR_ARCHIVE};
+cvar_t vr_finger_middle_z = {"vr_finger_middle_z", "0", CVAR_ARCHIVE};
+cvar_t vr_finger_ring_x = {"vr_finger_ring_x", "0", CVAR_ARCHIVE};
+cvar_t vr_finger_ring_y = {"vr_finger_ring_y", "0", CVAR_ARCHIVE};
+cvar_t vr_finger_ring_z = {"vr_finger_ring_z", "0", CVAR_ARCHIVE};
+cvar_t vr_finger_pinky_x = {"vr_finger_pinky_x", "0", CVAR_ARCHIVE};
+cvar_t vr_finger_pinky_y = {"vr_finger_pinky_y", "0", CVAR_ARCHIVE};
+cvar_t vr_finger_pinky_z = {"vr_finger_pinky_z", "0", CVAR_ARCHIVE};
 
 cvar_t vr_finger_grip_bias = {"vr_finger_grip_bias", "0", CVAR_ARCHIVE};
 cvar_t vr_finger_auto_close_thumb = {"vr_finger_auto_close_thumb", "1", CVAR_ARCHIVE};
