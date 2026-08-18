@@ -128,3 +128,32 @@ the one place the shortcut has a real cost.
 3. **World text renderer** — the five builtins store their data but draw
    nothing; needs a textured world-space pipeline.
 4. **The 46 stats**, if dedicated-server or true multiplayer VR is wanted.
+
+## Open bugs, reported but not diagnosed
+
+Found in testing on 2026-08-18 and left unresolved. Start here.
+
+1. **No monsters spawn** in `-game vrqc` on e1m1. Not a missing-QC problem:
+   all 32 monster files are listed in `VRQC/progs.src` and present on disk,
+   and `vrqc/progs.dat` is current. Undiagnosed. Check whether the QC's
+   monster spawn functions are being reached at all, and whether any recent
+   engine change (PF_setspawnparms writing parms 17-40 via ED_FindGlobal, or
+   the worldtext builtins) is disturbing progs execution.
+
+2. **Holster controls do not respond.** Hotspot detection and the drawn
+   holsters both work, so the geometry is fine; what is untested is whether
+   the hotspot reaches the QuakeC. Check that the `hotspot` field is written
+   to the player edict each frame, alongside `vrbits0`.
+
+3. **No VR options menu.** Not a bug — never ported. quakevr's `menu.cpp`
+   carries a large VR menu (torso, holsters, fingers, weapon offsets,
+   comfort). Everything is reachable by console cvar, but there is no
+   in-headset UI and no virtual keyboard, so the console needs a real
+   keyboard. This is the largest single piece of remaining work.
+
+4. **Brightness.** quakevr ships `gamma 0.5, contrast 1`; this was left at
+   vkQuake's `0.9 / 1.4`. Set from the console, or change the defaults.
+
+Untested and unverified: weapon-mounted buttons, holstered weapons drawing,
+off-hand attack, manual reload, and holsters surviving a level change. All
+four were written but never seen running.
