@@ -2915,7 +2915,11 @@ cvar_t vr_gunmodely = {"vr_gunmodely", "1.3", CVAR_ARCHIVE};
 
 // VR body and leg holsters. Defaults are quakevr's (vr_cvars.cpp:123-145).
 cvar_t vr_vrtorso_enabled = {"vr_vrtorso_enabled", "1", CVAR_ARCHIVE};
-cvar_t vr_vrtorso_x_offset = {"vr_vrtorso_x_offset", "-2.75", CVAR_ARCHIVE};
+// quakevr ships -2.75 for the torso and -3.5 / -4.25 for the hip and upper
+// holsters. All three are applied as vFwd * x in VR_GetBodyAnchor, so negative
+// puts them behind the player origin -- tuned to the author's body. Shifted
+// forward by 4 units here, which puts them at the chest rather than behind it.
+cvar_t vr_vrtorso_x_offset = {"vr_vrtorso_x_offset", "1.25", CVAR_ARCHIVE};
 cvar_t vr_vrtorso_y_offset = {"vr_vrtorso_y_offset", "-4.75", CVAR_ARCHIVE};
 // Not quakevr's -21: that belongs to its head_z_mult formula, which the change
 // of world scale breaks. The torso now hangs from the head by the model's own
@@ -3206,7 +3210,7 @@ void VR_XR_ModAllModels (void)
 	{
 		static const char *hand_models[6] = {"progs/hand_base.mdl",	  "progs/finger_thumb.mdl", "progs/finger_index.mdl",
 											 "progs/finger_middle.mdl", "progs/finger_ring.mdl",  "progs/finger_pinky.mdl"};
-		const float		   k = vr_hand_scale.value * VR_XR_GetScaleCorrect ();
+		const float		   correct = VR_XR_GetScaleCorrect ();
 		size_t			   n;
 
 		for (n = 0; n < countof (hand_models); n++)
@@ -3221,10 +3225,17 @@ void VR_XR_ModAllModels (void)
 			if (!hh)
 				continue;
 
+			// scale takes both factors, scale_origin takes only the correction.
+			// VR_ApplyModelMod is explicit about this:
+			//   scale        = original_scale * scale * scaleCorrect
+			//   scale_origin = (original_scale_origin + offsets) * scaleCorrect
+			// Multiplying scale_origin by the 0.34 as well shrank each part's
+			// origin by a different amount from its geometry, which pulled the
+			// five fingers off the palm and splayed them.
 			for (j = 0; j < 3; j++)
 			{
-				hh->scale[j] = hh->original_scale[j] * k;
-				hh->scale_origin[j] = hh->original_scale_origin[j] * k;
+				hh->scale[j] = hh->original_scale[j] * vr_hand_scale.value * correct;
+				hh->scale_origin[j] = hh->original_scale_origin[j] * correct;
 			}
 		}
 	}
@@ -4668,7 +4679,7 @@ cvar_t vr_shoulder_offset_x = {"vr_shoulder_offset_x", "-1", CVAR_ARCHIVE};
 cvar_t vr_shoulder_offset_y = {"vr_shoulder_offset_y", "1.75", CVAR_ARCHIVE};
 cvar_t vr_shoulder_offset_z = {"vr_shoulder_offset_z", "16", CVAR_ARCHIVE};
 
-cvar_t vr_hip_offset_x = {"vr_hip_offset_x", "-3.5", CVAR_ARCHIVE};
+cvar_t vr_hip_offset_x = {"vr_hip_offset_x", "0.5", CVAR_ARCHIVE};
 cvar_t vr_hip_offset_y = {"vr_hip_offset_y", "7.0", CVAR_ARCHIVE};
 cvar_t vr_hip_offset_z = {"vr_hip_offset_z", "0", CVAR_ARCHIVE};
 cvar_t vr_hip_holster_thresh = {"vr_hip_holster_thresh", "6.5", CVAR_ARCHIVE};
@@ -4678,7 +4689,7 @@ cvar_t vr_shoulder_holster_offset_y = {"vr_shoulder_holster_offset_y", "2.25", C
 cvar_t vr_shoulder_holster_offset_z = {"vr_shoulder_holster_offset_z", "-0.25", CVAR_ARCHIVE};
 cvar_t vr_shoulder_holster_thresh = {"vr_shoulder_holster_thresh", "7.8", CVAR_ARCHIVE};
 
-cvar_t vr_upper_holster_offset_x = {"vr_upper_holster_offset_x", "-4.25", CVAR_ARCHIVE};
+cvar_t vr_upper_holster_offset_x = {"vr_upper_holster_offset_x", "-0.25", CVAR_ARCHIVE};
 cvar_t vr_upper_holster_offset_y = {"vr_upper_holster_offset_y", "7", CVAR_ARCHIVE};
 cvar_t vr_upper_holster_offset_z = {"vr_upper_holster_offset_z", "8.5", CVAR_ARCHIVE};
 cvar_t vr_upper_holster_thresh = {"vr_upper_holster_thresh", "6.5", CVAR_ARCHIVE};
