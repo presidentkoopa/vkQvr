@@ -111,6 +111,23 @@ cvar_t vr_wpn_dir_weight_mult = {"vr_wpn_dir_weight_mult", "1.0", CVAR_ARCHIVE};
 cvar_t vr_wpn_dir_weight_2h_help_offset = {"vr_wpn_dir_weight_2h_help_offset", "0.3", CVAR_ARCHIVE};
 cvar_t vr_wpn_dir_weight_2h_help_mult = {"vr_wpn_dir_weight_2h_help_mult", "1.0", CVAR_ARCHIVE};
 
+// Model-only pitch. quakevr applies this to the drawn weapon and nothing else
+// (VR_GetWpnAngleOffsets, vr.cpp:815, used by CalcGunAngle at view.cpp:706),
+// so it rotates the model without moving the aim direction the shot follows.
+// That is the knob for a weapon that fires true but hangs at the wrong angle.
+cvar_t vr_gunmodelpitch = {"vr_gunmodelpitch", "0", CVAR_ARCHIVE};
+
+// Hand size. quakevr has no equivalent -- it never scales hand_base.mdl at all,
+// registering only hand.mdl at scale 0 to keep the weapon placeholder hidden.
+//
+// The default is derived from quakevr's own sizing rule rather than picked.
+// Its weapon table brings models to true size at 26.25 units to the metre:
+// v_shot.mdl measures 40.1 units and the table's 0.5 scale with the 1.333
+// correction takes it to 26.7 units, which is 1.02m -- a real shotgun. The
+// same rule on hand_base.mdl, 13.1 units or half a metre unscaled, wants
+// roughly 5 units for a hand, hence 0.38.
+cvar_t vr_hand_scale = {"vr_hand_scale", "0.38", CVAR_ARCHIVE};
+
 cvar_t vr_gunangle = {"vr_gunangle", "0", CVAR_ARCHIVE};
 cvar_t vr_gunyaw = {"vr_gunyaw", "0", CVAR_ARCHIVE};
 cvar_t vr_gun_z_offset = {"vr_gun_z_offset", "0", CVAR_ARCHIVE};
@@ -441,6 +458,8 @@ void VR_XR_Init (void)
 	Cvar_RegisterVariable (&vr_wpn_dir_weight_mult);
 	Cvar_RegisterVariable (&vr_wpn_dir_weight_2h_help_offset);
 	Cvar_RegisterVariable (&vr_wpn_dir_weight_2h_help_mult);
+	Cvar_RegisterVariable (&vr_gunmodelpitch);
+	Cvar_RegisterVariable (&vr_hand_scale);
 	Cvar_RegisterVariable (&vr_gunangle);
 	Cvar_RegisterVariable (&vr_gunyaw);
 	Cvar_RegisterVariable (&vr_gun_z_offset);
@@ -2931,6 +2950,37 @@ void VR_XR_ModAllModels (void)
 		XR_ModModel ("progs/legholster.mdl", scale, offset);
 	}
 
+	// Hands. Scale and origin move together so the model shrinks toward the
+	// controller point rather than drifting off it: a vertex ends up at
+	// v * scale + scale_origin, so scaling one without the other slides the
+	// whole model. No scale correction here -- quakevr applies none to these
+	// models, so vr_hand_scale is the final ratio and reads as one.
+	{
+		static const char *hand_models[6] = {"progs/hand_base.mdl",	  "progs/finger_thumb.mdl", "progs/finger_index.mdl",
+											 "progs/finger_middle.mdl", "progs/finger_ring.mdl",  "progs/finger_pinky.mdl"};
+		const float		   k = vr_hand_scale.value;
+		size_t			   n;
+
+		for (n = 0; n < countof (hand_models); n++)
+		{
+			qmodel_t   *m = Mod_ForName (hand_models[n], false);
+			aliashdr_t *hh;
+			int			j;
+
+			if (!m || m->type != mod_alias)
+				continue;
+			hh = (aliashdr_t *)Mod_Extradata (m);
+			if (!hh)
+				continue;
+
+			for (j = 0; j < 3; j++)
+			{
+				hh->scale[j] = hh->original_scale[j] * k;
+				hh->scale_origin[j] = hh->original_scale_origin[j] * k;
+			}
+		}
+	}
+
 	VR_XR_ModAllWeapons ();
 }
 
@@ -3144,6 +3194,11 @@ qboolean VR_XR_WeaponPose (const vec3_t player_origin, vec3_t out_origin, vec3_t
 
 	// viewmodels are drawn with inverted pitch, matching CalcGunAngle
 	out_angles[PITCH] = -out_angles[PITCH];
+
+	// Model-only pitch, added after the flip the way quakevr does it:
+	// angles[PITCH] = -handrot[PITCH] + oPitch (view.cpp:722). It moves the
+	// drawn weapon without touching the direction the shot travels.
+	out_angles[PITCH] += vr_gunmodelpitch.value;
 	return true;
 }
 
