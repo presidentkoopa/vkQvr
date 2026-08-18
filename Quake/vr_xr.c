@@ -4577,9 +4577,14 @@ void VR_XR_SetupBodyEntities (void)
 
 	// the torso hangs from the head, so it ducks when the player physically
 	// crouches (quakevr view.cpp:1245)
+	// The multiplier is quakevr's, and it expects metres: VR_GetHeadOrigin
+	// returns the raw tracked head position untouched by meters_to_units, which
+	// is applied separately to the movement delta (vr.cpp:2672). Converting back
+	// therefore has to remove vr_floor_offset as well, since that is baked into
+	// the stored height and is not part of how far the head is off the floor.
 	head_height = xr_head_pos_valid ? xr_last_head_pos[2] : 0.0f;
-	cl.vrtorso.origin[2] += (head_height / VR_METERS_TO_UNITS) * vr_vrtorso_head_z_mult.value;
-	cl.vrtorso.origin[2] += vr_vrtorso_z_offset.value;
+	head_height = (head_height - vr_floor_offset.value) / VR_METERS_TO_UNITS;
+	cl.vrtorso.origin[2] += head_height * vr_vrtorso_head_z_mult.value;
 }
 
 /*
