@@ -5395,8 +5395,12 @@ static void XR_SetupHandEntity (int hand, const vec3_t player_origin)
 	// VR_GetScaledAndAngledAliasVertexPosition. Rotating it here is the same
 	// thing: a local translate inside the entity matrix.
 	//
-	// Quake's local axes are X forward, Y left, Z up, and AngleVectors hands
-	// back right rather than left, hence the negated Y term.
+	// fwd*x + right*y + up*z, which is quakevr's redirectVector (util.hpp:216)
+	// verbatim. It uses +right, not the -right that Quake's entity matrix uses
+	// for model space -- the two conventions genuinely differ, and every finger
+	// offset in the shipped config was tuned against this one. Deriving the sign
+	// from "Quake local Y is left" instead of reading redirectVector mirrored
+	// every finger to the wrong side of the palm.
 	AngleVectors (angles, fwd, right, up);
 
 	// The composed offset for the palm. quakevr mirrors the composed Y for the
@@ -5411,9 +5415,9 @@ static void XR_SetupHandEntity (int hand, const vec3_t player_origin)
 	XR_HandPartOffset (XR_HAND_PART_BASE, hand, ofs);
 	if (hand == VR_XR_OffHand ())
 		ofs[1] = -ofs[1];
-	palm->origin[0] = world[0] + ofs[0] * fwd[0] - ofs[1] * right[0] + ofs[2] * up[0];
-	palm->origin[1] = world[1] + ofs[0] * fwd[1] - ofs[1] * right[1] + ofs[2] * up[1];
-	palm->origin[2] = world[2] + ofs[0] * fwd[2] - ofs[1] * right[2] + ofs[2] * up[2];
+	palm->origin[0] = world[0] + ofs[0] * fwd[0] + ofs[1] * right[0] + ofs[2] * up[0];
+	palm->origin[1] = world[1] + ofs[0] * fwd[1] + ofs[1] * right[1] + ofs[2] * up[1];
+	palm->origin[2] = world[2] + ofs[0] * fwd[2] + ofs[1] * right[2] + ofs[2] * up[2];
 
 	// The fist entry's angle offsets, exactly as quakevr applies them
 	// (view.cpp:1418-1429): added to the rotation BEFORE the pitch is inverted
@@ -5457,9 +5461,9 @@ static void XR_SetupHandEntity (int hand, const vec3_t player_origin)
 		XR_HandPartOffset (i, hand, ofs);
 		if (hand == VR_XR_OffHand ())
 			ofs[1] = -ofs[1]; // quakevr flips the composed Y for the off hand
-		f->origin[0] = world[0] + ofs[0] * fwd[0] - ofs[1] * right[0] + ofs[2] * up[0];
-		f->origin[1] = world[1] + ofs[0] * fwd[1] - ofs[1] * right[1] + ofs[2] * up[1];
-		f->origin[2] = world[2] + ofs[0] * fwd[2] - ofs[1] * right[2] + ofs[2] * up[2];
+		f->origin[0] = world[0] + ofs[0] * fwd[0] + ofs[1] * right[0] + ofs[2] * up[0];
+		f->origin[1] = world[1] + ofs[0] * fwd[1] + ofs[1] * right[1] + ofs[2] * up[1];
+		f->origin[2] = world[2] + ofs[0] * fwd[2] + ofs[1] * right[2] + ofs[2] * up[2];
 
 		VectorCopy (palm->angles, f->angles);
 		f->model = Mod_ForName (xr_finger_models[i], false);
