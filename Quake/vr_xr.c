@@ -1,5 +1,4 @@
 /*
-
 This program is free software; you can redistribute it and/or
 modify it under the terms of the GNU General Public License
 as published by the Free Software Foundation; either version 2
@@ -307,7 +306,6 @@ cvar_t vr_2h_throw_velocity_mult = {"vr_2h_throw_velocity_mult", "1.4", CVAR_ARC
 cvar_t vr_verbosebots = {"vr_verbosebots", "0", CVAR_ARCHIVE};
 
 /*
-
 	HAND ASSEMBLY OFFSETS
 
 	The hand is not one model: it is hand_base.mdl plus five finger models, each
@@ -830,7 +828,6 @@ void VR_XR_Init (void)
 }
 
 /*
-
 	VULKAN CREATION
 
 	Under XR_KHR_vulkan_enable2 the runtime creates the Vulkan instance and
@@ -977,7 +974,6 @@ qboolean VR_XR_CreateVulkanDevice (
 }
 
 /*
-
 	SESSION
 
 	An OpenXR session is a state machine, not just a handle. The runtime tells
@@ -1577,7 +1573,6 @@ qboolean VR_XR_BlitToEye (VkCommandBuffer cb, VkImage src, uint32_t src_width, u
 }
 
 /*
-
 	STEREO
 
 	Two coordinate systems have to be reconciled. OpenXR is right-handed metres
@@ -1903,7 +1898,6 @@ void VR_XR_EndFrame (void)
 }
 
 /*
-
 	INPUT
 
 	The OpenXR action system is a layer of indirection over raw buttons: we
@@ -2347,7 +2341,6 @@ static qboolean XR_LocateHand (XrSpace space, XrTime time, vec3_t out_pos, vec3_
 }
 
 /*
-
 	FINGER TRACKING
 
 	quakevr reads OpenVR's skeletal summary, which hands back a 0..1 curl per
@@ -2737,7 +2730,6 @@ void VR_XR_SyncInput (void)
 }
 
 /*
-
 	GAMEPLAY
 
 	Locomotion is head-relative: push the stick forward and you go where you are
@@ -2834,7 +2826,6 @@ cvar_t vr_leg_holster_model_y_offset = {"vr_leg_holster_model_y_offset", "0.0", 
 cvar_t vr_leg_holster_model_z_offset = {"vr_leg_holster_model_z_offset", "0.0", CVAR_ARCHIVE};
 
 /*
-
 	WEAPON MODEL OFFSETS
 
 	Quake's viewmodels are built to sit at the bottom-right of a flat screen,
@@ -3829,7 +3820,6 @@ static void VR_XR_Recenter_f (void)
 }
 
 /*
-
 	QUAKEC FIELDS
 
 	Publishes hand state onto the player's edict so game logic can read it as
@@ -3984,6 +3974,53 @@ static void XR_HandToWorld (const vr_hand_t *h, const vec3_t player_origin, vec3
 VR_XR_WriteEdictFields
 ===============
 */
+/*
+===============
+XR_UpdateFlickReload
+
+Spin the wrist hard enough and the weapon reloads -- the break-action flick a
+shotgun gets in quakevr (vr.cpp:3195-3245).
+
+Two conditions, both quakevr's. The wrist has to be turning faster than
+vr_spinreload_x_angular_threshold, and the hand has to have come back round to
+roughly where it started, dot over 0.6 against the direction it was pointing
+when it was last still. The second is what separates a flick from simply waving
+the weapon about: a flick returns.
+
+quakevr also refuses unless the weapon is a super shotgun with a part-empty
+clip, which it reads from stats its own protocol carries and this one does not.
+That check belongs to the QuakeC here, which sees the same weapon and clip it
+always did; the engine reports the gesture and the QC decides what it means.
+===============
+*/
+static void XR_UpdateFlickReload (int hand, qboolean *curr, qboolean *prev)
+{
+	const vr_hand_t *h = &vr_xr_hand[hand];
+	static vec3_t	 target_fwd[VR_HANDS];
+	vec3_t			 ang, fwd, right, up;
+	float			 avel_len;
+
+	*prev = *curr;
+
+	if (!h->tracked)
+	{
+		*curr = false;
+		return;
+	}
+
+	avel_len = VectorLength (h->angular_velocity);
+
+	VectorCopy (h->aim_angles, ang);
+	AngleVectors (ang, fwd, right, up);
+
+	// while the hand is near enough still, remember where it points; that is
+	// what the flick has to come back to
+	if (avel_len < 1.5f)
+		VectorCopy (fwd, target_fwd[hand]);
+
+	*curr = (avel_len >= vr_spinreload_x_angular_threshold.value) && (DotProduct (fwd, target_fwd[hand]) > 0.6f);
+}
+
 void VR_XR_WriteEdictFields (edict_t *ed)
 {
 	const struct pr_extfields_s *f;
@@ -4081,6 +4118,23 @@ void VR_XR_WriteEdictFields (edict_t *ed)
 			if (XR_TwoHandedAim (main_hand, unused))
 				bits += (float)QVR_VRBITS0_2H_AIMING;
 		}
+		{
+			static qboolean flick[VR_HANDS] = {false, false};
+			static qboolean flick_prev[VR_HANDS] = {false, false};
+
+			XR_UpdateFlickReload (main_hand, &flick[main_hand], &flick_prev[main_hand]);
+			XR_UpdateFlickReload (off_hand, &flick[off_hand], &flick_prev[off_hand]);
+
+			if (flick[main_hand])
+				bits += (float)QVR_VRBITS0_MAINHAND_RELOADFLICKING;
+			if (flick_prev[main_hand])
+				bits += (float)QVR_VRBITS0_MAINHAND_PREVRELOADFLICKING;
+			if (flick[off_hand])
+				bits += (float)QVR_VRBITS0_OFFHAND_RELOADFLICKING;
+			if (flick_prev[off_hand])
+				bits += (float)QVR_VRBITS0_OFFHAND_PREVRELOADFLICKING;
+		}
+
 		XR_SetFloat (ed, f->vrbits0, bits);
 	}
 
@@ -4088,7 +4142,6 @@ void VR_XR_WriteEdictFields (edict_t *ed)
 }
 
 /*
-
 	TELEPORT LOCOMOTION
 
 	Point with the off hand, hold to aim, release to go. quakevr traces a box
@@ -4227,7 +4280,6 @@ void VR_XR_UpdateTeleport (void)
 }
 
 /*
-
 	GUN WALL COLLISIONS
 
 	Without this the weapon happily pokes through walls, which both looks wrong
@@ -4336,7 +4388,6 @@ void VR_XR_ResolveGunCollision (vec3_t hand_pos, const vec3_t hand_angles, float
 }
 
 /*
-
 	HOLSTER HOTSPOTS
 
 	Holsters are places on the player's body: reach to your shoulder, hip or
@@ -4439,7 +4490,6 @@ static int XR_ComputeHotSpot (const vec3_t hand_world, const vec3_t player_origi
 }
 
 /*
-
 	VR BODY
 
 	The player can look down and see a torso, and see their own hands with
@@ -4925,7 +4975,6 @@ void VR_XR_SetupBodyEntities (void)
 }
 
 /*
-
 	VR HUD
 
 	A status bar painted flat across both eyes has no depth, so it fights the
@@ -4990,6 +5039,18 @@ qboolean VR_XR_HudMatrix (float out[16], float canvas_w, float canvas_h)
 		xr_hud_last_pos[2] += (target[2] - xr_hud_last_pos[2]) * 0.9f;
 	}
 	VectorCopy (xr_hud_last_pos, target);
+
+	// quakevr's status-bar placement offsets, applied in the panel's own frame
+	// so they read as "up", "right" and "closer" from where the player is
+	// looking rather than as world directions (vr_cvars.cpp:71-77).
+	VectorMA (target, vr_sbar_offset_x.value, fwd, target);
+	VectorMA (target, vr_sbar_offset_y.value, right, target);
+	VectorMA (target, vr_sbar_offset_z.value, up, target);
+
+	angles[PITCH] += vr_sbar_offset_pitch.value;
+	angles[YAW] += vr_sbar_offset_yaw.value;
+	angles[ROLL] += vr_sbar_offset_roll.value;
+
 
 	// quakevr's order, expressed as matrices instead of GL calls:
 	//   T(target) Rz(yaw-90) Rx(-(pitch+90)) T(-w*scale/2, -h*scale/2, 0) S(scale)

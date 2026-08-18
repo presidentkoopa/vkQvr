@@ -258,6 +258,10 @@ extern cvar_t vr_leg_holster_model_z_offset;
 #define QVR_VRBITS0_OFFHAND_PREVRELOADING  (1u << 7)
 #define QVR_VRBITS0_MAINHAND_RELOADING	   (1u << 8)
 #define QVR_VRBITS0_MAINHAND_PREVRELOADING (1u << 9)
+#define QVR_VRBITS0_OFFHAND_RELOADFLICKING	   (1u << 10)
+#define QVR_VRBITS0_OFFHAND_PREVRELOADFLICKING (1u << 11)
+#define QVR_VRBITS0_MAINHAND_RELOADFLICKING	   (1u << 12)
+#define QVR_VRBITS0_MAINHAND_PREVRELOADFLICKING (1u << 13)
 
 // Publishes hand state onto a player edict as QuakeC-readable fields, so game
 // logic (holsters, throwing, force-grab) has something to work with.
