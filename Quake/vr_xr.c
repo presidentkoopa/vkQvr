@@ -54,6 +54,11 @@ float VR_XR_BodyYaw (void);
 // (vr_cvars.cpp:173-187).
 cvar_t vr_gun_debug = {"vr_gun_debug", "0", CVAR_NONE};
 
+// Fraction of the headset's own per-eye resolution to render at. 1.0 is native.
+// Read during VR_XR_Init, before the video mode is chosen, so it cannot be
+// changed at runtime -- set it and restart.
+cvar_t vr_render_scale = {"vr_render_scale", "1.0", CVAR_ARCHIVE};
+
 // quakevr's per-weapon offset table. On: the offsets are required, not
 // cosmetic.
 //
@@ -558,6 +563,7 @@ void VR_XR_Init (void)
 	Cvar_RegisterVariable (&vr_teleport_range);
 	Cvar_RegisterVariable (&vr_gun_wall_collision);
 	Cvar_RegisterVariable (&vr_gun_debug);
+	Cvar_RegisterVariable (&vr_render_scale);
 	Cvar_RegisterVariable (&vr_wpn_offsets);
 	Cvar_RegisterVariable (&vr_hud_enabled);
 	Cvar_RegisterVariable (&vr_menu_scale);
@@ -813,6 +819,32 @@ void VR_XR_Init (void)
 	vr_xr_eye_width = views[0].recommendedImageRectWidth;
 	vr_xr_eye_height = views[0].recommendedImageRectHeight;
 	Con_Printf ("OpenXR: per-eye render target %ux%u (%ux MSAA)\n", (unsigned)vr_xr_eye_width, (unsigned)vr_xr_eye_height, (unsigned)views[0].recommendedSwapchainSampleCount);
+
+	// Render at the headset's own resolution.
+	//
+	// vkQuake sizes its render target from the window, and the eye image is
+	// blitted from it -- so at a 1280x720 window against a 2496x2688 eye, every
+	// frame was being magnified nearly four times in each axis before the
+	// player ever saw it. No amount of texture filtering recovers detail that
+	// was never drawn.
+	//
+	// This runs before VID_Init, which is the only reason it can work: the
+	// video mode has not been chosen yet, so setting the cvars here decides it.
+	// The desktop window becomes eye-sized and will likely be larger than the
+	// monitor, which does not matter -- it is a mirror of something being
+	// viewed in a headset.
+	//
+	// vr_render_scale trades sharpness for framerate without touching what the
+	// compositor receives, since the blit rescales either way.
+	{
+		const float s = CLAMP (0.25f, vr_render_scale.value, 2.0f);
+		const int	w = (int)(vr_xr_eye_width * s);
+		const int	h = (int)(vr_xr_eye_height * s);
+
+		Cvar_SetValue ("vid_width", (float)w);
+		Cvar_SetValue ("vid_height", (float)h);
+		Con_Printf ("OpenXR: rendering at %dx%d (scale %.2f)\n", w, h, s);
+	}
 
 	// --- what the runtime needs from Vulkan ---
 	// must be called before vkCreateInstance/vkCreateDevice, hence VR_XR_Init runs before VID_Init
