@@ -1,5 +1,4 @@
 /*
-Copyright (C) 2026 Quake VR contributors
 
 This program is free software; you can redistribute it and/or
 modify it under the terms of the GNU General Public License
@@ -133,10 +132,11 @@ cvar_t vr_gunmodelpitch = {"vr_gunmodelpitch", "0", CVAR_ARCHIVE};
 // every weapon and no InitWeaponCVars call overrides it.
 //
 // Off for models that were never authored for it, where vertex 0 means nothing
-// in particular. vr_grip_vertex selects which vertex, so a weapon whose grip
-// sits elsewhere can be dialled in without touching code.
+// in particular. vr_grip_vertex picks the vertex: -1 finds it from the mesh,
+// and any value from 0 up pins one explicitly.
 cvar_t vr_hand_grips_weapon = {"vr_hand_grips_weapon", "1", CVAR_ARCHIVE};
-cvar_t vr_grip_vertex = {"vr_grip_vertex", "0", CVAR_ARCHIVE};
+// -1 means work the grip out from the mesh; 0 or above pins a specific vertex.
+cvar_t vr_grip_vertex = {"vr_grip_vertex", "-1", CVAR_ARCHIVE};
 
 cvar_t vr_hand_scale = {"vr_hand_scale", "0.38", CVAR_ARCHIVE};
 
@@ -219,7 +219,6 @@ cvar_t vr_2h_throw_velocity_mult = {"vr_2h_throw_velocity_mult", "1.4", CVAR_ARC
 cvar_t vr_verbosebots = {"vr_verbosebots", "0", CVAR_ARCHIVE};
 
 /*
-================================================================================
 
 	HAND ASSEMBLY OFFSETS
 
@@ -308,7 +307,6 @@ static float xr_head_yaw = 0.0f;
 #define RAD2DEG(a) ((a) / M_PI_DIV_180)
 
 /*
-===============
 XR_ResultStr
 
 xrResultToString needs a live instance, so fall back to the numeric code when
@@ -325,7 +323,6 @@ static const char *XR_ResultStr (XrResult res)
 }
 
 /*
-===============
 XR_HasExtension
 ===============
 */
@@ -341,7 +338,6 @@ static qboolean XR_HasExtension (const XrExtensionProperties *props, uint32_t co
 }
 
 /*
-===============
 VR_XR_Shutdown
 ===============
 */
@@ -359,7 +355,6 @@ void VR_XR_Shutdown (void)
 }
 
 /*
-===============
 VR_XR_Init
 
 Never fatal. Any failure logs and leaves the engine running flat.
@@ -696,7 +691,6 @@ void VR_XR_Init (void)
 }
 
 /*
-================================================================================
 
 	VULKAN CREATION
 
@@ -711,7 +705,6 @@ void VR_XR_Init (void)
 */
 
 /*
-===============
 XR_GetProc
 ===============
 */
@@ -726,7 +719,6 @@ static void *XR_GetProc (const char *name)
 }
 
 /*
-===============
 VR_XR_CreateVulkanInstance
 ===============
 */
@@ -766,7 +758,6 @@ qboolean VR_XR_CreateVulkanInstance (PFN_vkGetInstanceProcAddr gipa, const VkIns
 }
 
 /*
-===============
 VR_XR_GetVulkanPhysicalDevice
 ===============
 */
@@ -806,7 +797,6 @@ qboolean VR_XR_GetVulkanPhysicalDevice (PFN_vkGetInstanceProcAddr gipa, VkInstan
 }
 
 /*
-===============
 VR_XR_CreateVulkanDevice
 ===============
 */
@@ -848,7 +838,6 @@ qboolean VR_XR_CreateVulkanDevice (
 }
 
 /*
-================================================================================
 
 	SESSION
 
@@ -888,7 +877,6 @@ static qboolean xr_eye_acquired[VR_XR_EYES] = {false, false};
 static qboolean xr_eye_rendered[VR_XR_EYES] = {false, false};
 
 /*
-===============
 XR_DestroySession
 
 Tears down session-scoped objects. Safe to call repeatedly and safe to call
@@ -937,7 +925,6 @@ static void XR_DestroySession (void)
 }
 
 /*
-===============
 XR_ChooseSwapchainFormat
 
 The runtime publishes the formats it can composite. Prefer UNORM, and prefer it
@@ -992,7 +979,6 @@ static int64_t XR_ChooseSwapchainFormat (void)
 }
 
 /*
-===============
 VR_XR_CreateSession
 ===============
 */
@@ -1109,7 +1095,6 @@ void VR_XR_CreateSession (VkInstance instance, VkPhysicalDevice physical_device,
 }
 
 /*
-===============
 VR_XR_SessionRunning
 ===============
 */
@@ -1128,7 +1113,6 @@ qboolean VR_XR_SessionRunning (void)
 }
 
 /*
-===============
 VR_XR_PumpEvents
 
 Drives the session state machine. Must be called regularly or the runtime will
@@ -1196,7 +1180,6 @@ void VR_XR_PumpEvents (void)
 }
 
 /*
-===============
 VR_XR_BeginFrame
 
 Returns false when this frame should not be rendered. The runtime can legally
@@ -1277,7 +1260,6 @@ qboolean VR_XR_BeginFrame (void)
 }
 
 /*
-===============
 XR_AcquireEyes
 
 Main thread only. Grabs an image from each eye swapchain and blocks until the
@@ -1311,7 +1293,6 @@ static void XR_AcquireEyes (void)
 }
 
 /*
-===============
 VR_XR_BlitToEyes
 
 Records Vulkan commands only -- no OpenXR calls -- so it is safe to run from a
@@ -1440,7 +1421,6 @@ qboolean VR_XR_BlitToEye (VkCommandBuffer cb, VkImage src, uint32_t src_width, u
 }
 
 /*
-================================================================================
 
 	STEREO
 
@@ -1476,7 +1456,6 @@ cvar_t vr_floor_offset = {"vr_floor_offset", "-16", CVAR_ARCHIVE};
 #define VR_METERS_TO_UNITS (vr_world_scale.value / (1.5f * 0.0254f))
 
 /*
-===============
 XR_QuatToQuakeAngles
 
 Derives Quake pitch/yaw/roll from an OpenXR orientation. Note Quake's pitch is
@@ -1528,7 +1507,6 @@ static void XR_QuatToQuakeAngles (const XrQuaternionf *q, float out_angles[3])
 }
 
 /*
-===============
 VR_XR_EyePose
 ===============
 */
@@ -1572,7 +1550,6 @@ qboolean VR_XR_EyePose (float out_angles[3], float out_offset[3])
 }
 
 /*
-===============
 VR_XR_EyeProjectionMatrix
 
 Matches the renderer's conventions: column major, reverse Z, Y flipped for
@@ -1623,7 +1600,6 @@ qboolean VR_XR_EyeProjectionMatrix (float matrix[16], float farclip)
 }
 
 /*
-===============
 VR_XR_ReleaseEyes
 ===============
 */
@@ -1645,7 +1621,6 @@ void VR_XR_ReleaseEyes (void)
 }
 
 /*
-===============
 VR_XR_EndFrame
 
 Submits no composition layers yet -- enough to prove the runtime accepts our
@@ -1772,7 +1747,6 @@ void VR_XR_EndFrame (void)
 }
 
 /*
-================================================================================
 
 	INPUT
 
@@ -1822,7 +1796,6 @@ static int	  xr_vel_head[VR_HANDS] = {0, 0};
 static int	  xr_vel_count[VR_HANDS] = {0, 0};
 
 /*
-===============
 XR_PushVelocitySample
 ===============
 */
@@ -1839,7 +1812,6 @@ static void XR_PushVelocitySample (int hand, const vec3_t vel, const vec3_t avel
 }
 
 /*
-===============
 XR_AverageVelocity
 
 Mean of the most recent `frames` samples, newest first.
@@ -1869,7 +1841,6 @@ static void XR_AverageVelocity (int hand, int frames, vec3_t history[VR_HANDS][V
 }
 
 /*
-===============
 VR_XR_ResetThrowAvg
 
 Clears the history, so a throw cannot inherit motion from before a teleport,
@@ -1885,7 +1856,6 @@ void VR_XR_ResetThrowAvg (void)
 }
 
 /*
-===============
 XR_Path
 ===============
 */
@@ -1897,7 +1867,6 @@ static XrPath XR_Path (const char *str)
 }
 
 /*
-===============
 XR_MakeAction
 ===============
 */
@@ -1924,7 +1893,6 @@ static XrAction XR_MakeAction (const char *name, const char *localized, XrAction
 }
 
 /*
-===============
 XR_SuggestProfile
 
 Offers one controller profile's worth of bindings. Failure is not fatal: a
@@ -1950,7 +1918,6 @@ static void XR_SuggestProfile (const char *profile, const XrActionSuggestedBindi
 }
 
 /*
-===============
 VR_XR_InitInput
 ===============
 */
@@ -2097,7 +2064,6 @@ void VR_XR_InitInput (void)
 }
 
 /*
-===============
 XR_ReadFloat
 ===============
 */
@@ -2123,7 +2089,6 @@ static float XR_ReadFloat (XrAction action, uint32_t hand)
 }
 
 /*
-===============
 XR_ReadBool
 ===============
 */
@@ -2149,7 +2114,6 @@ static qboolean XR_ReadBool (XrAction action, uint32_t hand)
 }
 
 /*
-===============
 XR_ReadStick
 ===============
 */
@@ -2177,7 +2141,6 @@ static void XR_ReadStick (XrAction action, uint32_t hand, float out[2])
 }
 
 /*
-===============
 XR_LocateHand
 
 Same coordinate conversion the head uses (quakevr vr.cpp:3511).
@@ -2228,7 +2191,6 @@ static qboolean XR_LocateHand (XrSpace space, XrTime time, vec3_t out_pos, vec3_
 }
 
 /*
-================================================================================
 
 	FINGER TRACKING
 
@@ -2259,7 +2221,6 @@ static PFN_xrDestroyHandTrackerEXT pfn_xrDestroyHandTrackerEXT = NULL;
 static PFN_xrLocateHandJointsEXT   pfn_xrLocateHandJointsEXT = NULL;
 
 /*
-===============
 XR_InitHandTracking
 
 Optional: plenty of runtimes and controllers do not report joints. When absent
@@ -2298,7 +2259,6 @@ static void XR_InitHandTracking (void)
 }
 
 /*
-===============
 XR_CurlToFrame
 
 quakevr's handSkeletalToFrame (vr.cpp:3270-3299): bias, clamp, scale to the
@@ -2319,7 +2279,6 @@ static float XR_CurlToFrame (const float curl[5], int finger)
 }
 
 /*
-===============
 XR_UpdateFingers
 
 Blending is quakevr's: move toward the target at a fixed rate rather than
@@ -2357,7 +2316,6 @@ static float XR_WeaponWeightFactor (float aiming2h, float weight_offset, float w
 }
 
 /*
-===============
 XR_WeaponWeightBlend
 
 The factor, adjusted for frametime the way quakevr does it
@@ -2384,7 +2342,6 @@ static float XR_WeaponWeightBlend (qboolean is_dir)
 }
 
 /*
-===============
 XR_ApplyWeaponWeight
 
 Lags the hand behind the controller according to the weapon's weight.
@@ -2541,7 +2498,6 @@ static void XR_UpdateFingers (int hand)
 }
 
 /*
-===============
 VR_XR_SyncInput
 ===============
 */
@@ -2616,7 +2572,6 @@ void VR_XR_SyncInput (void)
 }
 
 /*
-================================================================================
 
 	GAMEPLAY
 
@@ -2647,7 +2602,6 @@ cvar_t vr_lefthanded = {"vr_lefthanded", "0", CVAR_ARCHIVE};
 cvar_t vr_aim_hand = {"vr_aim_hand", "1", CVAR_ARCHIVE}; // 1 = right
 
 /*
-===============
 VR_XR_MainHand / VR_XR_OffHand
 
 One place that decides which physical controller is which. Everything that
@@ -2715,7 +2669,6 @@ cvar_t vr_leg_holster_model_y_offset = {"vr_leg_holster_model_y_offset", "0.0", 
 cvar_t vr_leg_holster_model_z_offset = {"vr_leg_holster_model_z_offset", "0.0", CVAR_ARCHIVE};
 
 /*
-================================================================================
 
 	WEAPON MODEL OFFSETS
 
@@ -2738,7 +2691,6 @@ typedef struct
 } vr_wpn_offset_t;
 
 /*
-===============
 VR_XR_GetScaleCorrect
 
 quakevr's model numbers were all authored when the default world scale was
@@ -2789,7 +2741,6 @@ static const vr_wpn_offset_t vr_wpn_offsets_ad[] = {
 };
 
 /*
-===============
 VR_FindWpnOffset
 
 Arcane Dimensions reuses stock model names with different geometry, so the
@@ -2823,7 +2774,6 @@ static const vr_wpn_offset_t *VR_FindWpnOffset (const char *model_name)
 }
 
 /*
-===============
 VR_XR_ApplyWeaponModelMod
 
 Rewrites the model header's scale and offset, which is where Quake already
@@ -2892,7 +2842,6 @@ void VR_XR_ApplyWeaponModelMod (aliashdr_t *hdr, const char *model_name)
 }
 
 /*
-===============
 VR_XR_ModAllWeapons
 
 Walks the offset table and applies each entry to its model, the same shape as
@@ -2937,7 +2886,6 @@ static void XR_ModModel (const char *name, const vec3_t scale, const vec3_t offs
 }
 
 /*
-===============
 VR_XR_ModAllModels
 
 quakevr's VR_ModAllModels: the weapons, plus the player's own body and the leg
@@ -3009,7 +2957,6 @@ void VR_XR_ModAllModels (void)
 }
 
 /*
-===============
 VR_XR_ScaleDump_f
 
 Prints what every VR model is actually being drawn at, so a complaint about
@@ -3086,7 +3033,6 @@ void VR_XR_ModAllWeapons (void)
 }
 
 /*
-===============
 XR_TwoHandedAim
 
 Returns true and fills out_angles when the off hand is gripping close enough to
@@ -3121,7 +3067,6 @@ static qboolean XR_TwoHandedAim (int main_hand, vec3_t out_angles)
 }
 
 /*
-===============
 VR_XR_HandSpeed
 ===============
 */
@@ -3133,7 +3078,6 @@ float VR_XR_HandSpeed (int hand)
 }
 
 /*
-===============
 VR_XR_WeaponPose
 
 Puts the gun where the hand is. The hand pose is in play space, so it has to be
@@ -3239,7 +3183,6 @@ qboolean VR_XR_WeaponPose (const vec3_t player_origin, vec3_t out_origin, vec3_t
 }
 
 /*
-===============
 VR_XR_AimAngles
 
 The aim pose is the controller's pointing ray, which is what the runtime
@@ -3283,7 +3226,6 @@ qboolean VR_XR_AimAngles (vec3_t out_angles)
 }
 
 /*
-===============
 VR_XR_UpdateLaser
 
 A dynamic light at the impact point. Cheap, needs no new rendering path, and
@@ -3335,7 +3277,6 @@ void VR_XR_UpdateLaser (void)
 }
 
 /*
-===============
 XR_UpdateRoomscale
 
 Called once per frame after the views are located. Converts however far the
@@ -3390,7 +3331,6 @@ static void XR_UpdateRoomscale (void)
 }
 
 /*
-===============
 XR_ApplyDeadzone
 
 Rescales past the deadzone so control stays smooth from the edge of the
@@ -3409,7 +3349,6 @@ static float XR_ApplyDeadzone (float v)
 }
 
 /*
-===============
 VR_XR_AdjustAngles
 
 Right stick turns the body. Snap turning is the default because smooth turning
@@ -3444,7 +3383,6 @@ void VR_XR_AdjustAngles (void)
 }
 
 /*
-===============
 VR_XR_Move
 ===============
 */
@@ -3503,7 +3441,6 @@ void VR_XR_Move (usercmd_t *cmd)
 }
 
 /*
-===============
 VR_XR_Buttons
 ===============
 */
@@ -3565,7 +3502,6 @@ unsigned int VR_XR_Buttons (void)
 }
 
 /*
-===============
 VR_XR_Impulse
 
 Off-hand stick left/right cycles weapons. Edge triggered: one weapon per push,
@@ -3600,7 +3536,6 @@ int VR_XR_Impulse (void)
 }
 
 /*
-===============
 VR_XR_Calibrate_f
 
 Sets vr_floor_offset from where the player's head actually is, so the in-game
@@ -3627,7 +3562,6 @@ static void VR_XR_Calibrate_f (void)
 }
 
 /*
-===============
 VR_XR_Recenter_f
 
 Forgets the room-scale movement consumed so far, which re-anchors the player to
@@ -3642,7 +3576,6 @@ static void VR_XR_Recenter_f (void)
 }
 
 /*
-================================================================================
 
 	QUAKEC FIELDS
 
@@ -3664,7 +3597,6 @@ static void VR_XR_Recenter_f (void)
 */
 
 /*
-===============
 XR_SetFloat / XR_SetVector
 ===============
 */
@@ -3693,7 +3625,6 @@ static void XR_SetVector (edict_t *ed, int ofs, const vec3_t v)
 }
 
 /*
-===============
 XR_HandToWorld
 
 Hand state is tracked in play space. Game logic wants it in the world, so it
@@ -3756,7 +3687,6 @@ static void XR_HandToWorld (const vr_hand_t *h, const vec3_t player_origin, vec3
 }
 
 /*
-===============
 VR_XR_WriteEdictFields
 ===============
 */
@@ -3862,7 +3792,6 @@ void VR_XR_WriteEdictFields (edict_t *ed)
 }
 
 /*
-================================================================================
 
 	TELEPORT LOCOMOTION
 
@@ -3877,7 +3806,6 @@ void VR_XR_WriteEdictFields (edict_t *ed)
 */
 
 /*
-===============
 VR_XR_UpdateTeleport
 ===============
 */
@@ -4003,7 +3931,6 @@ void VR_XR_UpdateTeleport (void)
 }
 
 /*
-================================================================================
 
 	GUN WALL COLLISIONS
 
@@ -4028,7 +3955,6 @@ cvar_t vr_gun_wall_collision = {"vr_gun_wall_collision", "0", CVAR_ARCHIVE};
 static qboolean xr_gun_colliding = false;
 
 /*
-===============
 VR_XR_ResolveGunCollision
 
 hand_pos is adjusted in place. muzzle_len is how far ahead of the hand the
@@ -4114,7 +4040,6 @@ void VR_XR_ResolveGunCollision (vec3_t hand_pos, const vec3_t hand_angles, float
 }
 
 /*
-================================================================================
 
 	HOLSTER HOTSPOTS
 
@@ -4149,7 +4074,6 @@ cvar_t vr_upper_holster_offset_z = {"vr_upper_holster_offset_z", "2.5", CVAR_ARC
 cvar_t vr_upper_holster_thresh = {"vr_upper_holster_thresh", "6.0", CVAR_ARCHIVE};
 
 /*
-===============
 XR_BodyAnchor
 
 Turns a body-relative offset into a world position, rotated by the player's
@@ -4174,7 +4098,6 @@ static float XR_Dist (const vec3_t a, const vec3_t b)
 }
 
 /*
-===============
 XR_ComputeHotSpot
 
 Order matters and follows quakevr's (vr.cpp:4504-4553): shoulders, then hips,
@@ -4220,7 +4143,6 @@ static int XR_ComputeHotSpot (const vec3_t hand_world, const vec3_t player_origi
 }
 
 /*
-================================================================================
 
 	VR BODY
 
@@ -4240,7 +4162,6 @@ static int XR_ComputeHotSpot (const vec3_t hand_world, const vec3_t player_origi
 #define XR_HAND_PART_BASE 5
 
 /*
-===============
 XR_AliasVertexWorldPos
 
 Where a given vertex of an entity's model ends up in the world.
@@ -4255,6 +4176,68 @@ Returns false when the model has no CPU-side vertices to read, which is
 everything that is not a plain MDL.
 ===============
 */
+/*
+===============
+XR_FindGripVertex
+
+Which vertex of a weapon is its grip.
+
+There is no answer to lift from quakevr here. Its HandAnchorVertex defaults to
+0 for every weapon and no InitWeaponCVars call overrides it, but vertex 0 is
+not a grip in either engine -- quakevr indexes the post-dedup VBO order, where
+0 is just the first vertex of the first triangle, and this indexes raw MDL
+order. quakevr's real values were dialled per weapon through its menu at
+runtime, so they live in a config rather than in the source.
+
+Geometry answers it instead. Quake viewmodels are authored pointing along +X,
+so the grip is at the back of the model: take the rearmost vertices, and among
+those the lowest, which is the bottom of the stock or the end of a haft. Held
+weapons all share that shape, whether shotgun, axe or nailgun.
+
+Cached per model, since it depends only on the mesh.
+===============
+*/
+static int XR_FindGripVertex (aliashdr_t *hdr)
+{
+	float min_x, max_x, cutoff, best_z;
+	int	  i, best;
+
+	if (!hdr || !hdr->anchorverts || hdr->numverts <= 0)
+		return 0;
+
+	if (hdr->gripvert >= 0)
+		return hdr->gripvert;
+
+	min_x = max_x = (float)hdr->anchorverts[0].v[0];
+	for (i = 1; i < hdr->numverts; i++)
+	{
+		const float x = (float)hdr->anchorverts[i].v[0];
+		if (x < min_x)
+			min_x = x;
+		if (x > max_x)
+			max_x = x;
+	}
+
+	// the rearmost tenth of the model's length counts as "the back"
+	cutoff = min_x + (max_x - min_x) * 0.1f;
+
+	best = 0;
+	best_z = FLT_MAX;
+	for (i = 0; i < hdr->numverts; i++)
+	{
+		if ((float)hdr->anchorverts[i].v[0] > cutoff)
+			continue;
+		if ((float)hdr->anchorverts[i].v[2] < best_z)
+		{
+			best_z = (float)hdr->anchorverts[i].v[2];
+			best = i;
+		}
+	}
+
+	hdr->gripvert = best;
+	return best;
+}
+
 static qboolean XR_AliasVertexWorldPos (entity_t *e, int vertex_index, const vec3_t extra_offsets, vec3_t out)
 {
 	aliashdr_t *hdr;
@@ -4268,6 +4251,9 @@ static qboolean XR_AliasVertexWorldPos (entity_t *e, int vertex_index, const vec
 	hdr = (aliashdr_t *)Mod_Extradata (e->model);
 	if (!hdr || !hdr->anchorverts || hdr->numverts <= 0)
 		return false;
+
+	if (vertex_index < 0)
+		vertex_index = XR_FindGripVertex (hdr);
 
 	vertex_index = CLAMP (0, vertex_index, hdr->numverts - 1);
 
@@ -4297,7 +4283,6 @@ static qboolean XR_AliasVertexWorldPos (entity_t *e, int vertex_index, const vec
 
 
 /*
-===============
 XR_HandPartOffset
 
 quakevr's fingerIdxToOffset (view.cpp:1370-1408). The terms accumulate rather
@@ -4366,7 +4351,6 @@ static const char *xr_finger_models[5] = {
 	"progs/finger_thumb.mdl", "progs/finger_index.mdl", "progs/finger_middle.mdl", "progs/finger_ring.mdl", "progs/finger_pinky.mdl"};
 
 /*
-===============
 XR_SetupHandEntity
 
 Places the palm and its five fingers at a hand. All six share the hand's
@@ -4461,7 +4445,6 @@ static void XR_SetupHandEntity (int hand, const vec3_t player_origin)
 }
 
 /*
-===============
 XR_SetupOffHandWeapon
 
 Dual wielding. quakevr ships the off-hand weapon's model and frame to the
@@ -4544,7 +4527,6 @@ static void XR_SetupOffHandWeapon (const vec3_t player_origin)
 }
 
 /*
-===============
 VR_XR_SetupBodyEntities
 ===============
 */
@@ -4601,7 +4583,6 @@ void VR_XR_SetupBodyEntities (void)
 }
 
 /*
-================================================================================
 
 	VR HUD
 
@@ -4625,7 +4606,6 @@ static vec3_t xr_hud_last_pos;
 static qboolean xr_hud_pos_valid = false;
 
 /*
-===============
 VR_XR_HudMatrix
 
 Returns false when the flat ortho matrix should be used instead.
@@ -4696,7 +4676,6 @@ qboolean VR_XR_HudMatrix (float out[16], float canvas_w, float canvas_h)
 }
 
 /*
-===============
 VR_XR_HandTouch
 
 Reaching for something is how you pick it up in VR, so items cannot rely on the
@@ -4812,7 +4791,6 @@ void VR_XR_HandTouch (edict_t *ent, edict_t *target)
 }
 
 /*
-===============
 VR_XR_Haptic
 ===============
 */
