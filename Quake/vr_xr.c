@@ -3269,17 +3269,31 @@ void VR_XR_ModAllModels (void)
 			if (!hh)
 				continue;
 
-			// scale takes both factors, scale_origin takes only the correction.
-			// VR_ApplyModelMod is explicit about this:
-			//   scale        = original_scale * scale * scaleCorrect
-			//   scale_origin = (original_scale_origin + offsets) * scaleCorrect
-			// Multiplying scale_origin by the 0.34 as well shrank each part's
-			// origin by a different amount from its geometry, which pulled the
-			// five fingers off the palm and splayed them.
+			// Both factors on both terms, which is NOT what VR_ApplyModelMod
+			// does -- it puts scaleCorrect on scale_origin and both on scale.
+			//
+			// The hand is six models whose relative positions are carried
+			// entirely in their scale_origins: hand_base sits at -7.0 on X,
+			// the fingers at 0.0, and that seven-unit difference is the hand's
+			// assembly. Scaling geometry by 0.34 without scaling those origins
+			// leaves the arrangement at full size around parts shrunk to a
+			// third, stretching the hand apart by 1/0.34.
+			//
+			// Measured on the four models: part centres spread 8.03 x 4.81 x
+			// 5.37 units that way, against 2.64 x 1.73 x 1.82 when both terms
+			// take both factors -- and the palm's own centre moves from 5.57
+			// units behind its entity origin to 0.18, which is the difference
+			// between the hand hanging off the controller and sitting on it.
+			// That spread is the seam between palm and fingers.
+			//
+			// quakevr can use its rule because its per-part offsets were tuned
+			// against it and against its own anchor vertex. Neither applies
+			// here, so the hand is scaled uniformly instead and keeps the shape
+			// its models were built with.
 			for (j = 0; j < 3; j++)
 			{
 				hh->scale[j] = hh->original_scale[j] * vr_hand_scale.value * correct;
-				hh->scale_origin[j] = hh->original_scale_origin[j] * correct;
+				hh->scale_origin[j] = hh->original_scale_origin[j] * vr_hand_scale.value * correct;
 			}
 		}
 	}
