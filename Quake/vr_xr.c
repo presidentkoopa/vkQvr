@@ -48,6 +48,7 @@ static void VR_XR_ScaleDump_f (void);
 static void VR_XR_BodyDump_f (void);
 static float XR_CrouchRatio (void);
 static void XR_HandToWorld (const vr_hand_t *h, const vec3_t player_origin, vec3_t out_pos, vec3_t out_angles, vec3_t out_vel);
+static qboolean XR_AliasVertexWorldPos (entity_t *e, int vertex_index, const vec3_t extra_offsets, vec3_t out);
 float VR_XR_BodyYaw (void);
 
 // Finger tracking cvars, declared here because VR_XR_Init registers them well
@@ -3533,6 +3534,60 @@ rotated by the body yaw and offset from the player's origin the same way the
 view is.
 ===============
 */
+/*
+===============
+VR_XR_SeatWeapon
+
+Shift a weapon so its grip lands in the hand, rather than moving the hand to
+the weapon.
+
+quakevr does it the other way round: the weapon entity sits at the controller
+and the hand is placed on a vertex of the weapon (V_SetupHandViewEnt). That
+works there because its per-weapon offsets, anchor vertices and hand offsets
+were all tuned together against real models. Here it puts the hand about nine
+units above the controller, because the weapon model carries a large offset
+along its own axis -- quakevr's ofs_z of 10 for v_shot, which becomes a
+scale_origin of 8.1 after the correction -- and anchoring the hand to a vertex
+of that displaced model carries the hand up with it.
+
+Inverting it is more robust and needs no per-weapon tuning at all. The hand
+stays where the controller is, which is where the player's real hand is, and
+the weapon is translated by however far its grip sits from its own origin. Any
+model works, including mod weapons quakevr never had numbers for: whatever the
+offsets are, the grip ends up in the hand.
+
+Returns false when there is nothing to seat, leaving the caller's origin alone.
+===============
+*/
+qboolean VR_XR_SeatWeapon (entity_t *e, const vec3_t hand_pos, vec3_t out_origin)
+{
+	vec3_t				   grip, delta, extra;
+	const vr_wpn_offset_t *w;
+
+	VectorCopy (hand_pos, out_origin);
+
+	if (!vr_hand_grips_weapon.value || !e || !e->model || e->model->type != mod_alias)
+		return false;
+
+	w = VR_FindWpnOffset (e->model->name);
+
+	extra[0] = w ? w->hand_x : 0.0f;
+	extra[1] = w ? w->hand_y : 0.0f;
+	extra[2] = w ? w->hand_z : 0.0f;
+	if (e->horizFlip)
+		extra[1] = -extra[1];
+
+	// where the grip currently is, with the entity at the hand
+	VectorCopy (hand_pos, e->origin);
+	if (!XR_AliasVertexWorldPos (e, (int)vr_grip_vertex.value, extra, grip))
+		return false;
+
+	// pull the weapon back by exactly that, so the grip lands on the hand
+	VectorSubtract (grip, hand_pos, delta);
+	VectorSubtract (hand_pos, delta, out_origin);
+	return true;
+}
+
 qboolean VR_XR_WeaponPose (const vec3_t player_origin, vec3_t out_origin, vec3_t out_angles)
 {
 	int			hand;
@@ -3634,6 +3689,21 @@ qboolean VR_XR_WeaponPose (const vec3_t player_origin, vec3_t out_origin, vec3_t
 	// angles[PITCH] = -handrot[PITCH] + oPitch (view.cpp:722). It moves the
 	// drawn weapon without touching the direction the shot travels.
 	out_angles[PITCH] += vr_gunmodelpitch.value;
+
+	// Seat the weapon so its grip lands on the hand.
+	//
+	// Everything above puts the entity at the controller, but the drawn model
+	// is not at its entity: it carries scale_origin, which for v_shot is 8.1
+	// units along the model's own axis once quakevr's ofs_z of 10 and the
+	// scale correction are applied. Rotated, that is what floats the weapon
+	// away from the hand -- and it swings with wrist orientation, which is why
+	// no fixed offset could ever have fixed it.
+	//
+	// The angles have to be on the entity first, because the seat is computed
+	// in the frame the model is actually drawn in.
+	VectorCopy (out_angles, cl.viewent.angles);
+	VR_XR_SeatWeapon (&cl.viewent, out_origin, out_origin);
+
 	return true;
 }
 
@@ -5420,45 +5490,10 @@ static void XR_SetupHandEntity (int hand, const vec3_t player_origin)
 
 	XR_HandToWorld (h, player_origin, world, angles, vel);
 
-	// Sit the hand on the weapon's grip rather than at the controller. The
-	// weapon is already placed at the hand, so this walks the last step the
-	// other way: find where the grip vertex ended up and move the hand there.
-	// Both hands, each to whichever weapon it is holding.
-	if (vr_hand_grips_weapon.value)
-	{
-		entity_t *wpn = (hand == VR_XR_MainHand ()) ? &cl.viewent : &cl.offhand_viewent;
-		vec3_t				   grip, extra;
-		const vr_wpn_offset_t *w = wpn->model ? VR_FindWpnOffset (wpn->model->name) : NULL;
-		int					   av = (int)vr_grip_vertex.value;
-
-		// Per-weapon grip: quakevr gives every weapon its own anchor vertex
-		// and its own offset from it (vr_wofs_hand_av_nn and
-		// vr_wofs_hand_x/y/z_nn). VR_GetWpnHandOffsets feeds extraOffsets,
-		// applied inside the weapon's model frame (view.cpp:1436, 1446).
-		// Y mirrors with the hand.
-		// Deliberately NOT defaulting to w->hand_av.
-		//
-		// quakevr's shipped hand_av for v_shot is 165, and that model has no
-		// duplicated vertices (numverts_vbo == numverts == 219), so it maps
-		// straight through to MDL 165 -- which sits at X=32.4 on a model
-		// spanning 0.1 to 33.2. That is the muzzle, and a hand placed there was
-		// already tried and rejected in the headset; the mesh search's
-		// rear-of-stock answer is what looked right.
-		//
-		// So either hand_av means something other than "the vertex the hand
-		// sits on", or it is consumed through a path this port does not
-		// reproduce. Until that is understood the numbers stay in the table but
-		// are not trusted; vr_grip_vertex still pins one by hand.
-
-		extra[0] = w ? w->hand_x : vr_hand_offset_x.value;
-		extra[1] = w ? w->hand_y : vr_hand_offset_y.value;
-		extra[2] = w ? w->hand_z : vr_hand_offset_z.value;
-		if (hand == VR_XR_OffHand ())
-			extra[1] = -extra[1];
-
-		if (wpn->model && XR_AliasVertexWorldPos (wpn, av, extra, grip))
-			VectorCopy (grip, world);
-	}
+	// The hand stays at the controller, which is where the player's real hand
+	// is. The weapon is seated to the hand instead, in VR_XR_SeatWeapon --
+	// the inverse of quakevr's arrangement, and the only way to keep both
+	// aligned without per-weapon tuning.
 
 
 	// quakevr builds the hand out of six separate models, each with its own
@@ -5624,9 +5659,13 @@ static void XR_SetupOffHandWeapon (const vec3_t player_origin)
 	}
 
 	XR_HandToWorld (h, player_origin, world, angles, vel);
-	VectorCopy (world, view->origin);
 	VectorCopy (angles, view->angles);
 	view->angles[PITCH] = -view->angles[PITCH];
+	view->angles[PITCH] += vr_gunmodelpitch.value;
+
+	// seated to the off hand the same way the main weapon is, so both agree
+	VR_XR_SeatWeapon (view, world, view->origin);
+
 	view->colormap = vid.colormap;
 	view->alpha = ENTALPHA_DEFAULT;
 	view->netstate.scale = ENTSCALE_DEFAULT;

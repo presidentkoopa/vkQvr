@@ -201,6 +201,7 @@ void VR_XR_AutosaveNow (void);
 void VR_ClearWorldText (void);
 void VR_XR_DebugPrints (void);
 qboolean VR_XR_HolsterSpot (int hotspot, vec3_t out);
+qboolean VR_XR_SeatWeapon (entity_t *e, const vec3_t hand_pos, vec3_t out_origin);
 float VR_XR_BodyYaw (void);
 qboolean VR_XR_HandDebug (int hand, vec3_t out_pos, vec3_t out_angles);
 
