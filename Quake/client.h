@@ -249,7 +249,10 @@ typedef struct
 	entity_t vrtorso;
 	entity_t vrhand[2];			 // palm
 	entity_t vrfinger[2][5];	 // thumb, index, middle, ring, pinky
-	entity_t vrlegholster[2];	 // hip holster models
+	// The four drawn holster slots: left hip, right hip, left upper, right
+	// upper, in QVR_HS order. quakevr draws legholster.mdl at each
+	// (view.cpp V_SetupHolsterSlotViewEnt).
+	entity_t vrlegholster[4];
 	entity_t offhand_viewent;	 // second weapon, for dual wielding
 
 	entity_t *entities; // spike -- moved into here

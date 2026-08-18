@@ -606,11 +606,13 @@ void R_DrawViewModel (cb_context_t *cbx)
 	// placed in the world. quakevr does the same (gl_rmain.cpp:1592).
 	if (VR_XR_SessionRunning ())
 	{
-		entity_t *body[2 + VR_HANDS * 6];
+		entity_t *body[2 + 4 + VR_HANDS * 6];
 		int		  n = 0, hand, f;
 
 		body[n++] = &cl.vrtorso;
 		body[n++] = &cl.offhand_viewent; // second weapon when dual wielding
+		for (hand = 0; hand < 4; hand++)
+			body[n++] = &cl.vrlegholster[hand]; // the worn holsters themselves
 		for (hand = 0; hand < VR_HANDS; hand++)
 		{
 			body[n++] = &cl.vrhand[hand];

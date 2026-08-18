@@ -2822,7 +2822,10 @@ cvar_t vr_gunmodely = {"vr_gunmodely", "0", CVAR_ARCHIVE};
 cvar_t vr_vrtorso_enabled = {"vr_vrtorso_enabled", "1", CVAR_ARCHIVE};
 cvar_t vr_vrtorso_x_offset = {"vr_vrtorso_x_offset", "-3.25", CVAR_ARCHIVE};
 cvar_t vr_vrtorso_y_offset = {"vr_vrtorso_y_offset", "0.0", CVAR_ARCHIVE};
-cvar_t vr_vrtorso_z_offset = {"vr_vrtorso_z_offset", "-21.0", CVAR_ARCHIVE};
+// Not quakevr's -21: that belongs to its head_z_mult formula, which the change
+// of world scale breaks. The torso now hangs from the head by the model's own
+// height, so this is a nudge from there and starts at zero.
+cvar_t vr_vrtorso_z_offset = {"vr_vrtorso_z_offset", "0", CVAR_ARCHIVE};
 cvar_t vr_vrtorso_head_z_mult = {"vr_vrtorso_head_z_mult", "32.0", CVAR_ARCHIVE};
 cvar_t vr_vrtorso_x_scale = {"vr_vrtorso_x_scale", "1.0", CVAR_ARCHIVE};
 cvar_t vr_vrtorso_y_scale = {"vr_vrtorso_y_scale", "1.0", CVAR_ARCHIVE};
@@ -4515,27 +4518,89 @@ cvar_t vr_upper_holster_offset_z = {"vr_upper_holster_offset_z", "2.5", CVAR_ARC
 cvar_t vr_upper_holster_thresh = {"vr_upper_holster_thresh", "6.0", CVAR_ARCHIVE};
 
 /*
+XR_CrouchRatio
+
+How far down the player has physically crouched, 0 standing to 1 fully down.
+quakevr's VR_GetCrouchRatio: calibrated standing height over current head
+height, minus one.
+===============
+*/
+static float XR_CrouchRatio (void)
+{
+	float curr;
+
+	if (!xr_head_pos_valid)
+		return 0.0f;
+
+	// head height in metres, which is what vr_height_calibration is in
+	curr = (xr_last_head_pos[2] - vr_floor_offset.value) / VR_METERS_TO_UNITS;
+	if (curr <= 0.01f)
+		return 0.0f;
+
+	return CLAMP (0.0f, (vr_height_calibration.value / curr) - 1.0f, 1.0f);
+}
+
+/*
+===============
 XR_BodyAnchor
 
-Turns a body-relative offset into a world position, rotated by the player's
-facing. y is mirrored for the left side. (quakevr VR_GetBodyAnchor, vr.cpp:2221)
+A point hung off the player's body, which is where every holster lives.
+quakevr's VR_GetBodyAnchor, followed properly this time (vr.cpp):
+
+  - the body origin sits 2 units above the player entity, and drops by 18 times
+    the crouch ratio
+  - the frame pitches down by 35 degrees times the crouch ratio, so holsters
+    swing forward as the player folds over instead of staying upright and
+    ending up in the floor
+  - the vertical offset is scaled by vr_height_calibration, so a tall player's
+    hips sit further from their eyes than a short one's
+
+That last one was missing here, and it is not a small correction: at the
+default calibration it scales every holster's height by 1.6.
 ===============
 */
 static void XR_BodyAnchor (const vec3_t player_origin, float ox, float oy, float oz, vec3_t out)
 {
-	const float yaw = DEG2RAD (cl.viewangles[YAW]);
-	const float s = sinf (yaw), c = cosf (yaw);
+	const float crouch = XR_CrouchRatio ();
+	const float height_ratio = CLAMP (0.0f, crouch, 0.8f);
+	vec3_t		ang, fwd, right, up, origin;
 
-	out[0] = player_origin[0] + ox * c - oy * s;
-	out[1] = player_origin[1] + ox * s + oy * c;
-	out[2] = player_origin[2] + oz;
+	// quakevr blends head and hand direction for body yaw; the view yaw stands
+	// in for that until VR_GetBodyYawAngle is ported.
+	ang[PITCH] = height_ratio * -35.0f;
+	ang[YAW] = cl.viewangles[YAW];
+	ang[ROLL] = 0.0f;
+	AngleVectors (ang, fwd, right, up);
+
+	VectorCopy (player_origin, origin);
+	origin[2] += 2.0f;
+	origin[2] -= crouch * 18.0f;
+
+	out[0] = origin[0] + right[0] * oy + fwd[0] * ox + up[0] * vr_height_calibration.value * oz;
+	out[1] = origin[1] + right[1] * oy + fwd[1] * ox + up[1] * vr_height_calibration.value * oz;
+	out[2] = origin[2] + right[2] * oy + fwd[2] * ox + up[2] * vr_height_calibration.value * oz;
 }
 
-static float XR_Dist (const vec3_t a, const vec3_t b)
+/*
+===============
+XR_HolsterCrouchAdjust
+
+Crouching slides the holsters forward along the body's facing, by a different
+amount per set: quakevr's VR_GetHolsterXCrouchAdjustment multipliers are -9.5
+for the hips, -1.5 for the uppers and 1.5 for the shoulders.
+===============
+*/
+static void XR_HolsterCrouchAdjust (float mult, vec3_t out)
 {
-	vec3_t d;
-	VectorSubtract (a, b, d);
-	return VectorLength (d);
+	const float height_ratio = CLAMP (0.0f, XR_CrouchRatio () - 0.2f, 0.6f);
+	vec3_t		ang, fwd, right, up;
+
+	ang[PITCH] = 0.0f;
+	ang[YAW] = cl.viewangles[YAW];
+	ang[ROLL] = 0.0f;
+	AngleVectors (ang, fwd, right, up);
+
+	VectorScale (fwd, height_ratio * mult, out);
 }
 
 /*
@@ -4547,38 +4612,27 @@ then upper/chest. First match wins.
 */
 static int XR_ComputeHotSpot (const vec3_t hand_world, const vec3_t player_origin)
 {
-	vec3_t spot;
+	static const int order[6] = {QVR_HS_LEFT_SHOULDER_HOLSTER, QVR_HS_RIGHT_SHOULDER_HOLSTER, QVR_HS_LEFT_HIP_HOLSTER,
+								 QVR_HS_RIGHT_HIP_HOLSTER,	   QVR_HS_LEFT_UPPER_HOLSTER,	 QVR_HS_RIGHT_UPPER_HOLSTER};
+	int				 i;
 
-	// shoulders: base shoulder offset plus the holster offset outboard of it
-	XR_BodyAnchor (
-		player_origin, vr_shoulder_offset_x.value + vr_shoulder_holster_offset_x.value,
-		-(vr_shoulder_offset_y.value + vr_shoulder_holster_offset_y.value), vr_shoulder_offset_z.value + vr_shoulder_holster_offset_z.value, spot);
-	if (XR_Dist (hand_world, spot) < vr_shoulder_holster_thresh.value)
-		return QVR_HS_LEFT_SHOULDER_HOLSTER;
+	// positions come from VR_XR_HolsterSpot, the same function the drawn
+	// holsters use, so the place a hand has to reach and the place the holster
+	// appears cannot drift apart
+	(void)player_origin;
 
-	XR_BodyAnchor (
-		player_origin, vr_shoulder_offset_x.value + vr_shoulder_holster_offset_x.value,
-		vr_shoulder_offset_y.value + vr_shoulder_holster_offset_y.value, vr_shoulder_offset_z.value + vr_shoulder_holster_offset_z.value, spot);
-	if (XR_Dist (hand_world, spot) < vr_shoulder_holster_thresh.value)
-		return QVR_HS_RIGHT_SHOULDER_HOLSTER;
+	for (i = 0; i < 6; i++)
+	{
+		vec3_t		spot, d;
+		const float thresh = (i < 2) ? vr_shoulder_holster_thresh.value : ((i < 4) ? vr_hip_holster_thresh.value : vr_upper_holster_thresh.value);
 
-	// hips
-	XR_BodyAnchor (player_origin, vr_hip_offset_x.value, -vr_hip_offset_y.value, vr_hip_offset_z.value, spot);
-	if (XR_Dist (hand_world, spot) < vr_hip_holster_thresh.value)
-		return QVR_HS_LEFT_HIP_HOLSTER;
+		if (!VR_XR_HolsterSpot (order[i], spot))
+			continue;
 
-	XR_BodyAnchor (player_origin, vr_hip_offset_x.value, vr_hip_offset_y.value, vr_hip_offset_z.value, spot);
-	if (XR_Dist (hand_world, spot) < vr_hip_holster_thresh.value)
-		return QVR_HS_RIGHT_HIP_HOLSTER;
-
-	// upper / chest
-	XR_BodyAnchor (player_origin, vr_upper_holster_offset_x.value, -vr_upper_holster_offset_y.value, vr_upper_holster_offset_z.value, spot);
-	if (XR_Dist (hand_world, spot) < vr_upper_holster_thresh.value)
-		return QVR_HS_LEFT_UPPER_HOLSTER;
-
-	XR_BodyAnchor (player_origin, vr_upper_holster_offset_x.value, vr_upper_holster_offset_y.value, vr_upper_holster_offset_z.value, spot);
-	if (XR_Dist (hand_world, spot) < vr_upper_holster_thresh.value)
-		return QVR_HS_RIGHT_UPPER_HOLSTER;
+		VectorSubtract (hand_world, spot, d);
+		if (VectorLength (d) < thresh)
+			return order[i];
+	}
 
 	return QVR_HS_NONE;
 }
@@ -4594,7 +4648,8 @@ hang it off.
 */
 qboolean VR_XR_HolsterSpot (int hotspot, vec3_t out)
 {
-	vec3_t player_origin;
+	vec3_t player_origin, adj;
+	float  mult;
 
 	if (!VR_XR_SessionRunning ())
 		return false;
@@ -4606,30 +4661,40 @@ qboolean VR_XR_HolsterSpot (int hotspot, vec3_t out)
 	switch (hotspot)
 	{
 	case QVR_HS_LEFT_SHOULDER_HOLSTER:
-		XR_BodyAnchor (
-			player_origin, vr_shoulder_offset_x.value + vr_shoulder_holster_offset_x.value,
-			-(vr_shoulder_offset_y.value + vr_shoulder_holster_offset_y.value), vr_shoulder_offset_z.value + vr_shoulder_holster_offset_z.value, out);
-		return true;
 	case QVR_HS_RIGHT_SHOULDER_HOLSTER:
+	{
+		const float sgn = (hotspot == QVR_HS_LEFT_SHOULDER_HOLSTER) ? -1.0f : 1.0f;
 		XR_BodyAnchor (
 			player_origin, vr_shoulder_offset_x.value + vr_shoulder_holster_offset_x.value,
-			vr_shoulder_offset_y.value + vr_shoulder_holster_offset_y.value, vr_shoulder_offset_z.value + vr_shoulder_holster_offset_z.value, out);
-		return true;
+			sgn * (vr_shoulder_offset_y.value + vr_shoulder_holster_offset_y.value), vr_shoulder_offset_z.value + vr_shoulder_holster_offset_z.value,
+			out);
+		mult = 1.5f;
+		break;
+	}
 	case QVR_HS_LEFT_HIP_HOLSTER:
-		XR_BodyAnchor (player_origin, vr_hip_offset_x.value, -vr_hip_offset_y.value, vr_hip_offset_z.value, out);
-		return true;
 	case QVR_HS_RIGHT_HIP_HOLSTER:
-		XR_BodyAnchor (player_origin, vr_hip_offset_x.value, vr_hip_offset_y.value, vr_hip_offset_z.value, out);
-		return true;
+	{
+		const float sgn = (hotspot == QVR_HS_LEFT_HIP_HOLSTER) ? -1.0f : 1.0f;
+		XR_BodyAnchor (player_origin, vr_hip_offset_x.value, sgn * vr_hip_offset_y.value, vr_hip_offset_z.value, out);
+		mult = -9.5f;
+		break;
+	}
 	case QVR_HS_LEFT_UPPER_HOLSTER:
-		XR_BodyAnchor (player_origin, vr_upper_holster_offset_x.value, -vr_upper_holster_offset_y.value, vr_upper_holster_offset_z.value, out);
-		return true;
 	case QVR_HS_RIGHT_UPPER_HOLSTER:
-		XR_BodyAnchor (player_origin, vr_upper_holster_offset_x.value, vr_upper_holster_offset_y.value, vr_upper_holster_offset_z.value, out);
-		return true;
+	{
+		const float sgn = (hotspot == QVR_HS_LEFT_UPPER_HOLSTER) ? -1.0f : 1.0f;
+		XR_BodyAnchor (player_origin, vr_upper_holster_offset_x.value, sgn * vr_upper_holster_offset_y.value, vr_upper_holster_offset_z.value, out);
+		mult = -1.5f;
+		break;
+	}
 	default:
 		return false;
 	}
+
+	// each set slides forward by its own amount as the player crouches
+	XR_HolsterCrouchAdjust (mult, adj);
+	VectorAdd (out, adj, out);
+	return true;
 }
 
 /*
@@ -4927,6 +4992,59 @@ static const char *xr_finger_models[5] = {
 	"progs/finger_thumb.mdl", "progs/finger_index.mdl", "progs/finger_middle.mdl", "progs/finger_ring.mdl", "progs/finger_pinky.mdl"};
 
 /*
+XR_SetupHolsterSlots
+
+The visible holsters. quakevr draws progs/legholster.mdl at four of the six
+hotspots -- both hips and both uppers, not the shoulders -- each with its own
+angles (view.cpp V_RenderView_HolsterModels, 1681-1704):
+
+  left hip     pitch   0, yaw bodyYaw - 10, mirrored
+  right hip    pitch   0, yaw bodyYaw + 10
+  left upper   pitch -30, yaw bodyYaw - 10, mirrored
+  right upper  pitch -30, yaw bodyYaw + 10
+
+The ten-degree splay and the thirty-degree tilt on the uppers are what make
+these read as worn on a body rather than floating beside one, and mirroring the
+left pair is the same horizFlip the off hand uses.
+
+Positions come from VR_XR_HolsterSpot, so a holster is drawn exactly where the
+hand has to reach to trigger it.
+===============
+*/
+static void XR_SetupHolsterSlots (void)
+{
+	static const int	  hotspots[4] = {QVR_HS_LEFT_HIP_HOLSTER, QVR_HS_RIGHT_HIP_HOLSTER, QVR_HS_LEFT_UPPER_HOLSTER, QVR_HS_RIGHT_UPPER_HOLSTER};
+	static const float	  pitches[4] = {0.0f, 0.0f, -30.0f, -30.0f};
+	static const float	  yaw_offsets[4] = {-10.0f, 10.0f, -10.0f, 10.0f};
+	static const qboolean flips[4] = {true, false, true, false};
+	int					  i;
+
+	for (i = 0; i < 4; i++)
+	{
+		entity_t *e = &cl.vrlegholster[i];
+		vec3_t	  spot;
+
+		if (!vr_leg_holster_model_enabled.value || !VR_XR_HolsterSpot (hotspots[i], spot))
+		{
+			e->model = NULL;
+			continue;
+		}
+
+		VectorCopy (spot, e->origin);
+		e->angles[PITCH] = pitches[i];
+		e->angles[YAW] = cl.viewangles[YAW] + yaw_offsets[i];
+		e->angles[ROLL] = 0.0f;
+
+		e->model = Mod_ForName ("progs/legholster.mdl", false);
+		e->frame = 0;
+		e->colormap = vid.colormap;
+		e->alpha = ENTALPHA_DEFAULT;
+		e->netstate.scale = ENTSCALE_DEFAULT;
+		e->horizFlip = flips[i];
+	}
+}
+
+/*
 XR_SetupHandEntity
 
 Places the palm and its five fingers at a hand. All six share the hand's
@@ -5126,6 +5244,7 @@ void VR_XR_SetupBodyEntities (void)
 		XR_SetupHandEntity (hand, player->origin);
 
 	XR_SetupOffHandWeapon (player->origin);
+	XR_SetupHolsterSlots ();
 
 	// --- torso (quakevr V_SetupVRTorsoViewEnt, view.cpp:1222-1249) ---
 	if (!vr_vrtorso_enabled.value)
@@ -5139,7 +5258,12 @@ void VR_XR_SetupBodyEntities (void)
 	yaw_only[ROLL] = 0.0f;
 	AngleVectors (yaw_only, fwd, right, up);
 
-	cl.vrtorso.angles[PITCH] = vr_vrtorso_pitch.value;
+	const float torso_crouch = CLAMP (0.0f, XR_CrouchRatio (), 0.8f);
+
+	// quakevr tilts the torso forward and slides it back as the player folds
+	// over (view.cpp:1233, 1244), so it follows the body through a crouch
+	// instead of staying bolt upright.
+	cl.vrtorso.angles[PITCH] = vr_vrtorso_pitch.value - (torso_crouch * 35.0f);
 	cl.vrtorso.angles[YAW] = cl.viewangles[YAW] + vr_vrtorso_yaw.value;
 	cl.vrtorso.angles[ROLL] = vr_vrtorso_roll.value;
 
@@ -5152,26 +5276,34 @@ void VR_XR_SetupBodyEntities (void)
 
 	VectorCopy (player->origin, cl.vrtorso.origin);
 	VectorMA (cl.vrtorso.origin, vr_vrtorso_x_offset.value, fwd, cl.vrtorso.origin);
+	VectorMA (cl.vrtorso.origin, -(torso_crouch * 14.0f), fwd, cl.vrtorso.origin);
 	VectorMA (cl.vrtorso.origin, vr_vrtorso_y_offset.value, right, cl.vrtorso.origin);
 
-	// the torso hangs from the head, so it ducks when the player physically
-	// crouches (quakevr view.cpp:1245)
-	// quakevr multiplies a head height by vr_vrtorso_head_z_mult
-	// (view.cpp:1245), and its VR_GetHeadOrigin is in metres, so the faithful
-	// conversion also removes vr_floor_offset. Doing exactly that puts the
-	// torso above the head here: player_origin + 39 against a head at
-	// player_origin + 33.
+	// Hang the torso from the head, by the model's own measured height.
 	//
-	// The reason is that quakevr's 32 is Quake's native units per metre, while
-	// this runs at 26.25, and the two disagree by more than vr_vrtorso_z_offset
-	// can absorb. Leaving the floor offset in scales the head height by the
-	// ratio between them and lands the torso at chest height, which is where a
-	// torso goes.
+	// quakevr does origin[2] += headMetres * vr_vrtorso_head_z_mult + z_offset
+	// (view.cpp:1245-1246). Its 32 is Quake's native units per metre and this
+	// runs at 26.25, so the same arithmetic puts the torso above the head:
+	// player_origin + 39 against a head at + 33. No value of z_offset repairs
+	// that, because the error grows with the player's height.
 	//
-	// Deliberately not quakevr's arithmetic, because quakevr's arithmetic does
-	// not survive the change of world scale.
-	head_height = xr_head_pos_valid ? (xr_last_head_pos[2] / VR_METERS_TO_UNITS) : 0.0f;
-	cl.vrtorso.origin[2] += head_height * vr_vrtorso_head_z_mult.value;
+	// Measuring the model needs no magic number at all. vrtorso.mdl spans from
+	// scale_origin[2] up to scale_origin[2] + scale[2] * 255, so putting its
+	// top at the head puts the neck at the neck -- whatever the world scale,
+	// whatever the player's height. vr_vrtorso_z_offset nudges from there.
+	{
+		float top = 0.0f;
+
+		if (cl.vrtorso.model && cl.vrtorso.model->type == mod_alias)
+		{
+			aliashdr_t *th = (aliashdr_t *)Mod_Extradata (cl.vrtorso.model);
+			if (th)
+				top = th->scale_origin[2] + th->scale[2] * 255.0f;
+		}
+
+		head_height = xr_head_pos_valid ? xr_last_head_pos[2] : 0.0f;
+		cl.vrtorso.origin[2] += head_height - top;
+	}
 }
 
 /*
