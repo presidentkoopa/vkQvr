@@ -1686,6 +1686,26 @@ static void PF_sv_setspawnparms (void)
 
 	for (i = 0; i < NUM_BASIC_SPAWN_PARMS; i++)
 		(&pr_global_struct->parm1)[i] = client->spawn_parms[i];
+
+	// Everything past the basic sixteen, by name.
+	//
+	// SV_SaveSpawnparms already stores these and the savegame code already
+	// writes them, but this builtin only ever restored the first sixteen -- so
+	// a mod using more than that had them saved and then dropped on the way
+	// back in. quakevr's QC runs to parm40, with the holstered weapons, their
+	// flags and their clip counts living in 13-16 and 25-40, which is every
+	// holster a player is carrying.
+	//
+	// They cannot be reached as (&parm1)[i] the way the basic ones are: the
+	// ported QC declares them below end_sys_globals, which is what keeps the
+	// progs CRC at stock 5927, so they are not part of the system block at all.
+	// ED_FindGlobal is the same route SV_SaveSpawnparms takes to write them.
+	for (; i < NUM_TOTAL_SPAWN_PARMS; i++)
+	{
+		ddef_t *g = ED_FindGlobal (va ("parm%i", i + 1));
+		if (g)
+			qcvm->globals[g->ofs] = client->spawn_parms[i];
+	}
 }
 
 /*
