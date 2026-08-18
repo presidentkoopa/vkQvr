@@ -1243,9 +1243,11 @@ static void R_DrawVRDebug (cb_context_t *cbx)
 
 	const int *sets[3] = {hip, shoulder, upper};
 	const float shown[3] = {vr_show_hip_holsters.value, vr_show_shoulder_holsters.value, vr_show_upper_holsters.value};
-	const uint32_t colors[3] = {0x8000ff00u, 0x80ff0000u, 0x8000ffffu};
+	// quakevr's own trigger distances, one per set, so the colour changes at
+	// exactly the point the holster would actually fire
+	const float threshes[3] = {vr_hip_holster_thresh.value, vr_shoulder_holster_thresh.value, vr_upper_holster_thresh.value};
 
-	int		 set, side, i;
+	int		 set, side;
 	qboolean any;
 
 	if (!VR_XR_SessionRunning ())
@@ -1258,38 +1260,60 @@ static void R_DrawVRDebug (cb_context_t *cbx)
 	R_BeginDebugUtilsLabel (cbx, "vr debug");
 	R_BindPipeline (cbx, VK_PIPELINE_BIND_POINT_GRAPHICS, vulkan_globals.debug_lines_pipeline[R_MainPassPipelineVariant (cbx->render_pass_index)]);
 
+	// quakevr draws a line from each hand to each holster, not a marker at the
+	// holster (vr_showfn.cpp:175-227). That is the better idea: the anchors sit
+	// inside the player's own body where a marker would be buried, but a line
+	// from the hand always points at one, and its colour says whether the hand
+	// is close enough to trigger it. Yellow in range, cyan for the main hand
+	// and green for the off hand otherwise, at quakevr's alphas.
+	//
+	// The cvar picks which hands to draw, as VrOptionHandSelection:
+	// 1 main hand, 2 off hand, 3 both.
 	for (set = 0; set < 3; set++)
 	{
-		if (shown[set] == 0.0f)
+		const int  sel = (int)shown[set];
+		const float thresh = threshes[set];
+		int		   hand;
+
+		if (sel <= 0)
 			continue;
 
-		for (side = 0; side < 2; side++)
+		for (hand = 0; hand < 2; hand++)
 		{
-			vec3_t spot;
-			if (!VR_XR_HolsterSpot (sets[set][side], spot))
+			const qboolean is_main = (hand == VR_XR_MainHand ());
+			vec3_t		   hand_pos, hand_ang;
+
+			// 1 main, 2 off, 3 both
+			if (sel == 1 && !is_main)
+				continue;
+			if (sel == 2 && is_main)
 				continue;
 
-			// a three-axis cross, sized to the hotspot's own reach so what is
-			// drawn is what the hand actually has to enter
+			if (!VR_XR_HandDebug (hand, hand_pos, hand_ang))
+				continue;
+
+			for (side = 0; side < 2; side++)
 			{
+				vec3_t		   spot, d;
+				uint32_t	   c;
 				VkBuffer	   vb;
 				VkDeviceSize   vbo;
-				basicvertex_t *v = (basicvertex_t *)R_VertexAllocate (6 * sizeof (basicvertex_t), &vb, &vbo);
-				const float	   r = 6.0f;
+				basicvertex_t *v;
 
-				for (i = 0; i < 3; i++)
-				{
-					vec3_t a, b;
-					VectorCopy (spot, a);
-					VectorCopy (spot, b);
-					a[i] -= r;
-					b[i] += r;
-					R_FillDebugVertex (&v[i * 2 + 0], a, colors[set]);
-					R_FillDebugVertex (&v[i * 2 + 1], b, colors[set]);
-				}
+				if (!VR_XR_HolsterSpot (sets[set][side], spot))
+					continue;
 
+				VectorSubtract (hand_pos, spot, d);
+				if (VectorLength (d) < thresh)
+					c = 0xf200ffffu; // yellow, in range
+				else
+					c = is_main ? 0xbfffff00u : 0xbf00ff00u; // cyan / green
+
+				v = (basicvertex_t *)R_VertexAllocate (2 * sizeof (basicvertex_t), &vb, &vbo);
+				R_FillDebugVertex (&v[0], hand_pos, c);
+				R_FillDebugVertex (&v[1], spot, c);
 				vulkan_globals.vk_cmd_bind_vertex_buffers (cbx->cb, 0, 1, &vb, &vbo);
-				vulkan_globals.vk_cmd_draw (cbx->cb, 6, 1, 0, 0);
+				vulkan_globals.vk_cmd_draw (cbx->cb, 2, 1, 0, 0);
 			}
 		}
 	}
