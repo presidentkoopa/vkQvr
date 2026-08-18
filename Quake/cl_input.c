@@ -480,6 +480,12 @@ void CL_FinishMove (usercmd_t *cmd)
 		bits |= 4;
 	in_use.state &= ~2;
 
+	// Off-hand attack shares bit 4, which stock Quake spends on in_use and the
+	// QuakeC never reads. quakevr does the same (cl_input.cpp:681). Without it
+	// the second weapon has no way to fire at all.
+	if (VR_XR_OffHandAttacking ())
+		bits |= 4;
+
 	bits |= VR_XR_Buttons (); // trigger = attack, A/X = jump
 
 	cmd->buttons = bits;

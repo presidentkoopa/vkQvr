@@ -750,6 +750,7 @@ void VR_XR_Init (void)
 
 	Cmd_AddCommand ("vr_recenter", VR_XR_Recenter_f);
 	VR_RegisterWeaponCVars ();
+	VR_XR_RegisterInputCommands ();
 
 	Cmd_AddCommand ("vr_scaledump", VR_XR_ScaleDump_f);
 	Cmd_AddCommand ("vr_bodydump", VR_XR_BodyDump_f);
@@ -4402,6 +4403,159 @@ void VR_XR_Move (usercmd_t *cmd)
 VR_XR_Buttons
 ===============
 */
+/*
+================================================================================
+
+	VR INPUT COMMANDS
+
+	quakevr binds its VR interactions to console commands rather than reading
+	the controller directly everywhere -- +grableft, +reloadright and the rest
+	(cl_input.cpp:793-805) -- and its shipped config binds them to keys. That
+	buys two things: any of them can be rebound to any input, and the same state
+	reaches the QuakeC whether it came from a controller or a keypress.
+
+	Without these, three interactions had no path here at all. Off-hand attack
+	rides usercmd bit 4, so the second weapon could not fire. Reload set no
+	vrbits, so manual reload did nothing. And every bind in quakevr's config
+	naming one of these silently failed.
+
+	Controller inputs are OR-ed with these below rather than replacing them, so
+	the grip still grabs without anything being bound.
+
+================================================================================
+*/
+
+// cl_input.c exports these but declares them in no header
+void KeyDown (kbutton_t *b);
+void KeyUp (kbutton_t *b);
+
+kbutton_t in_grableft, in_grabright;
+kbutton_t in_reloadleft, in_reloadright;
+kbutton_t in_flickreloadleft, in_flickreloadright;
+kbutton_t in_offhandattack;
+kbutton_t in_vrbutton3, in_vrbutton4, in_vrbutton5, in_vrbutton6, in_vrbutton7, in_vrbutton8;
+
+static void IN_GrabLeftDown (void) { KeyDown (&in_grableft); }
+static void IN_GrabLeftUp (void) { KeyUp (&in_grableft); }
+static void IN_GrabRightDown (void) { KeyDown (&in_grabright); }
+static void IN_GrabRightUp (void) { KeyUp (&in_grabright); }
+static void IN_ReloadLeftDown (void) { KeyDown (&in_reloadleft); }
+static void IN_ReloadLeftUp (void) { KeyUp (&in_reloadleft); }
+static void IN_ReloadRightDown (void) { KeyDown (&in_reloadright); }
+static void IN_ReloadRightUp (void) { KeyUp (&in_reloadright); }
+static void IN_FlickReloadLeftDown (void) { KeyDown (&in_flickreloadleft); }
+static void IN_FlickReloadLeftUp (void) { KeyUp (&in_flickreloadleft); }
+static void IN_FlickReloadRightDown (void) { KeyDown (&in_flickreloadright); }
+static void IN_FlickReloadRightUp (void) { KeyUp (&in_flickreloadright); }
+static void IN_OffHandAttackDown (void) { KeyDown (&in_offhandattack); }
+static void IN_OffHandAttackUp (void) { KeyUp (&in_offhandattack); }
+static void IN_VrButton3Down (void) { KeyDown (&in_vrbutton3); }
+static void IN_VrButton3Up (void) { KeyUp (&in_vrbutton3); }
+static void IN_VrButton4Down (void) { KeyDown (&in_vrbutton4); }
+static void IN_VrButton4Up (void) { KeyUp (&in_vrbutton4); }
+static void IN_VrButton5Down (void) { KeyDown (&in_vrbutton5); }
+static void IN_VrButton5Up (void) { KeyUp (&in_vrbutton5); }
+static void IN_VrButton6Down (void) { KeyDown (&in_vrbutton6); }
+static void IN_VrButton6Up (void) { KeyUp (&in_vrbutton6); }
+static void IN_VrButton7Down (void) { KeyDown (&in_vrbutton7); }
+static void IN_VrButton7Up (void) { KeyUp (&in_vrbutton7); }
+static void IN_VrButton8Down (void) { KeyDown (&in_vrbutton8); }
+static void IN_VrButton8Up (void) { KeyUp (&in_vrbutton8); }
+
+void VR_XR_RegisterInputCommands (void)
+{
+	Cmd_AddCommand ("+grableft", IN_GrabLeftDown);
+	Cmd_AddCommand ("-grableft", IN_GrabLeftUp);
+	Cmd_AddCommand ("+grabright", IN_GrabRightDown);
+	Cmd_AddCommand ("-grabright", IN_GrabRightUp);
+	Cmd_AddCommand ("+reloadleft", IN_ReloadLeftDown);
+	Cmd_AddCommand ("-reloadleft", IN_ReloadLeftUp);
+	Cmd_AddCommand ("+reloadright", IN_ReloadRightDown);
+	Cmd_AddCommand ("-reloadright", IN_ReloadRightUp);
+	Cmd_AddCommand ("+flickreloadleft", IN_FlickReloadLeftDown);
+	Cmd_AddCommand ("-flickreloadleft", IN_FlickReloadLeftUp);
+	Cmd_AddCommand ("+flickreloadright", IN_FlickReloadRightDown);
+	Cmd_AddCommand ("-flickreloadright", IN_FlickReloadRightUp);
+	Cmd_AddCommand ("+offhandattack", IN_OffHandAttackDown);
+	Cmd_AddCommand ("-offhandattack", IN_OffHandAttackUp);
+	Cmd_AddCommand ("+button3", IN_VrButton3Down);
+	Cmd_AddCommand ("-button3", IN_VrButton3Up);
+	Cmd_AddCommand ("+button4", IN_VrButton4Down);
+	Cmd_AddCommand ("-button4", IN_VrButton4Up);
+	Cmd_AddCommand ("+button5", IN_VrButton5Down);
+	Cmd_AddCommand ("-button5", IN_VrButton5Up);
+	Cmd_AddCommand ("+button6", IN_VrButton6Down);
+	Cmd_AddCommand ("-button6", IN_VrButton6Up);
+	Cmd_AddCommand ("+button7", IN_VrButton7Down);
+	Cmd_AddCommand ("-button7", IN_VrButton7Up);
+	Cmd_AddCommand ("+button8", IN_VrButton8Down);
+	Cmd_AddCommand ("-button8", IN_VrButton8Up);
+}
+
+/*
+===============
+VR_XR_OffHandAttacking
+
+Off-hand fire, from the bound command or the off-hand trigger. quakevr carries
+this on usercmd bit 4 (cl_input.cpp:681), which stock Quake spends on in_use and
+never reads, so the QuakeC sees it in the same place.
+===============
+*/
+qboolean VR_XR_OffHandAttacking (void)
+{
+	int off;
+
+	if (in_offhandattack.state & 3)
+		return true;
+
+	if (!xr_input_ready || !VR_XR_SessionRunning ())
+		return false;
+
+	off = VR_XR_OffHand ();
+	return vr_xr_hand[off].tracked && vr_xr_hand[off].trigger > 0.6f;
+}
+
+/*
+===============
+VR_XR_Reloading
+
+Manual reload for one hand, from the bound command or the off-hand B button.
+Nothing drove this before, so quakevr's reload was unreachable here.
+===============
+*/
+qboolean VR_XR_Reloading (int hand)
+{
+	const kbutton_t *k = (hand == VR_XR_MainHand ()) ? &in_reloadright : &in_reloadleft;
+
+	if (k->state & 3)
+		return true;
+
+	if (!xr_input_ready || !VR_XR_SessionRunning ())
+		return false;
+
+	return vr_xr_hand[hand].tracked && vr_xr_hand[hand].btn_b;
+}
+
+/*
+===============
+VR_XR_Grabbing
+
+Grab for one hand: the grip, or the bound command.
+===============
+*/
+qboolean VR_XR_Grabbing (int hand)
+{
+	const kbutton_t *k = (hand == VR_XR_MainHand ()) ? &in_grabright : &in_grableft;
+
+	if (k->state & 3)
+		return true;
+
+	if (!xr_input_ready || !VR_XR_SessionRunning ())
+		return false;
+
+	return vr_xr_hand[hand].tracked && vr_xr_hand[hand].grip > 0.5f;
+}
+
 unsigned int VR_XR_Buttons (void)
 {
 	static qboolean was_firing = false;
@@ -4842,10 +4996,17 @@ void VR_XR_WriteEdictFields (edict_t *ed)
 		float bits = 0.0f;
 		if (xr_teleporting)
 			bits += (float)QVR_VRBITS0_TELEPORTING;
-		if (vr_xr_hand[off_hand].grip > 0.5f)
+		if (VR_XR_Grabbing (off_hand))
 			bits += (float)QVR_VRBITS0_OFFHAND_GRABBING;
-		if (vr_xr_hand[main_hand].grip > 0.5f)
+		if (VR_XR_Grabbing (main_hand))
 			bits += (float)QVR_VRBITS0_MAINHAND_GRABBING;
+
+		// Manual reload, which nothing drove before: quakevr's QC reads these
+		// bits (vr_util.qc) and they were never set, so reload was unreachable.
+		if (VR_XR_Reloading (off_hand))
+			bits += (float)QVR_VRBITS0_OFFHAND_RELOADING;
+		if (VR_XR_Reloading (main_hand))
+			bits += (float)QVR_VRBITS0_MAINHAND_RELOADING;
 		{
 			vec3_t unused;
 			if (XR_TwoHandedAim (main_hand, unused))
