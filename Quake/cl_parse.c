@@ -1925,6 +1925,9 @@ void CL_ParseServerMessage (void)
 
 		case svc_setview:
 			cl.viewentity = MSG_ReadShort ();
+			// the server has decided which way the player faces; fold the
+			// physical head yaw out of it (quakevr cl_parse.cpp:2949)
+			VR_XR_PushYaw ();
 			break;
 
 		case svc_lightstyle:

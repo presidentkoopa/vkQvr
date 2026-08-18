@@ -198,6 +198,7 @@ int VR_XR_Impulse (void);
 void VR_XR_UpdateLaser (void);
 void VR_XR_AutosaveTick (void);
 void VR_XR_AutosaveNow (void);
+void VR_XR_PushYaw (void);
 void VR_ClearWorldText (void);
 void VR_XR_DebugPrints (void);
 qboolean VR_XR_HolsterSpot (int hotspot, vec3_t out);

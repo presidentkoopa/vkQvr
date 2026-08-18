@@ -4271,6 +4271,32 @@ void VR_XR_AdjustAngles (void)
 VR_XR_Move
 ===============
 */
+/*
+===============
+VR_XR_PushYaw
+
+Rebase the body yaw against where the player's head is physically pointing.
+
+The camera faces cl.viewangles[YAW] plus however far the player has turned
+their head within the play space. So when the server sets a view angle -- a
+level start, a teleport, a trigger_changelevel dropping the player in facing a
+particular way -- taking it as the body yaw leaves them facing that angle plus
+their head, which is wrong by however they happened to be looking when the map
+loaded.
+
+quakevr handles it by flagging a readback and folding the head yaw out on the
+next update (VR_PushYaw, vr.cpp:1507, consumed at 3407). Same thing here,
+without the deferral: the head yaw is already known at this point.
+===============
+*/
+void VR_XR_PushYaw (void)
+{
+	if (!VR_XR_SessionRunning ())
+		return;
+
+	cl.viewangles[YAW] -= xr_head_yaw;
+}
+
 void VR_XR_Move (usercmd_t *cmd)
 {
 	float fwd, side;
@@ -4281,9 +4307,56 @@ void VR_XR_Move (usercmd_t *cmd)
 	fwd = XR_ApplyDeadzone (vr_xr_hand[VR_HAND_LEFT].stick[1]);
 	side = XR_ApplyDeadzone (vr_xr_hand[VR_HAND_LEFT].stick[0]);
 
-	// added, not assigned: keyboard input stays live alongside the controller
-	cmd->forwardmove += cl_forwardspeed.value * fwd;
-	cmd->sidemove += cl_sidespeed.value * side;
+	// Which way the stick means.
+	//
+	// Mode 0 is raw: forward on the stick is forward for the body, and steering
+	// is done by turning. Mode 1, which is what quakevr ships, takes the
+	// direction from the off hand instead -- point where you want to walk and
+	// push -- and projects it into the head's yaw frame so speed does not
+	// change with how the hand is tilted (vr.cpp:4571-4613).
+	if (vr_movement_mode.value == 1 && vr_xr_hand[VR_HAND_LEFT].tracked)
+	{
+		vec3_t		lfwd, lright, lup;
+		float		mx, my, f, s, fac;
+		const float head = DEG2RAD (xr_head_yaw);
+		const float hs = sinf (head), hc = cosf (head);
+
+		AngleVectors (vr_xr_hand[VR_HAND_LEFT].aim_angles, lfwd, lright, lup);
+
+		// Pointing steeply up or down leaves forward with almost no horizontal
+		// component, and the direction becomes noise. quakevr swaps in the up
+		// axis past 0.8 (vr.cpp:4581-4595), which stays well conditioned.
+		if (fabsf (lfwd[2]) > 0.8f)
+		{
+			vec3_t tmp;
+			if (lfwd[2] < -0.8f)
+				VectorScale (lfwd, -1.0f, lfwd);
+			else
+				VectorScale (lup, -1.0f, lup);
+			VectorCopy (lup, tmp);
+			VectorCopy (lfwd, lup);
+			VectorCopy (tmp, lfwd);
+		}
+
+		// scale so tilting the hand does not change how fast you walk
+		fac = (fabsf (lup[2]) > 0.01f) ? (1.0f / lup[2]) : 1.0f;
+
+		mx = (fwd * lfwd[0] + side * lright[0]) * fac;
+		my = (fwd * lfwd[1] + side * lright[1]) * fac;
+
+		// into the head's yaw frame
+		f = mx * hc + my * hs;
+		s = -mx * hs + my * hc;
+
+		cmd->forwardmove += cl_forwardspeed.value * f;
+		cmd->sidemove += cl_forwardspeed.value * s;
+	}
+	else
+	{
+		// added, not assigned: keyboard input stays live alongside the controller
+		cmd->forwardmove += cl_forwardspeed.value * fwd;
+		cmd->sidemove += cl_sidespeed.value * side;
+	}
 
 	// grip on the left hand doubles as run, mirroring the speed key
 	if (vr_xr_hand[VR_HAND_LEFT].grip > 0.7f)
