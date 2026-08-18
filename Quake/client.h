@@ -256,6 +256,8 @@ typedef struct
 	// Weapon-mounted buttons, one per hand: a control on the weapon that the
 	// other hand presses. (quakevr client.hpp:265-266)
 	entity_t vrwpnbutton[2];
+	// The weapons sitting IN the holsters, one per drawn slot.
+	entity_t vrholsterwpn[4];
 	entity_t offhand_viewent;	 // second weapon, for dual wielding
 
 	entity_t *entities; // spike -- moved into here

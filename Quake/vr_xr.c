@@ -162,6 +162,12 @@ cvar_t vr_grip_vertex = {"vr_grip_vertex", "-1", CVAR_ARCHIVE};
 // like anything else. These are that entry's shipped values, index 17 in
 // ReleaseFiles/Id1/config.cfg -- vr_wofs_scale_17, vr_wofs_pitch_17, and the
 // vr_wofs_hand_x/y/z_17 triple that offsets the hand from its anchor.
+// Target length, in Quake units, for a weapon this port has no numbers for --
+// any mod or expansion weapon. Its longest axis is scaled to this. 26 is what
+// quakevr's own table produces for v_shot, about a metre at the shipped world
+// scale. 0 disables, leaving unknown weapons at full viewmodel size.
+cvar_t vr_wpn_autoscale = {"vr_wpn_autoscale", "26", CVAR_ARCHIVE};
+
 cvar_t vr_hand_scale = {"vr_hand_scale", "0.34", CVAR_ARCHIVE};
 cvar_t vr_hand_pitch = {"vr_hand_pitch", "-8.5", CVAR_ARCHIVE};
 // vr_wofs_yaw_17 and vr_wofs_roll_17 are both 0 in the shipped config, but
@@ -634,6 +640,7 @@ void VR_XR_Init (void)
 	Cvar_RegisterVariable (&vr_gunmodelpitch);
 	Cvar_RegisterVariable (&vr_hand_grips_weapon);
 	Cvar_RegisterVariable (&vr_grip_vertex);
+	Cvar_RegisterVariable (&vr_wpn_autoscale);
 	Cvar_RegisterVariable (&vr_hand_scale);
 	Cvar_RegisterVariable (&vr_hand_pitch);
 	Cvar_RegisterVariable (&vr_hand_yaw);
@@ -3357,11 +3364,43 @@ void VR_XR_ApplyWeaponModelMod (aliashdr_t *hdr, const char *model_name)
 	// applies the mod unconditionally (vr.cpp:670-676) for exactly this reason.
 	if (!w)
 	{
-		// genuinely not a weapon we have numbers for: leave the model alone
+		// A weapon with no entry -- a mod's, or an expansion pack's. quakevr
+		// leaves these at full size, which means a viewmodel built to sit in
+		// the corner of a flat screen, roughly forty units of gun, held at
+		// arm's length. It is unusable.
+		//
+		// Size it from its own geometry instead. Quake viewmodels are built
+		// along X, so the longest axis is the weapon's length, and scaling that
+		// to vr_wpn_autoscale puts any model at a believable size whatever the
+		// author drew it at. The reference is what quakevr's own numbers
+		// produce: v_shot is 40.1 units and its table takes it to 26.7, about a
+		// metre at the shipped world scale.
+		//
+		// Nothing else is needed to make an unknown weapon usable. Where it
+		// sits is already handled -- VR_XR_SeatWeapon finds the grip from the
+		// mesh and puts it in the hand -- so scale was the only thing missing.
+		float len = 0.0f;
+
 		for (i = 0; i < 3; i++)
+			if (hdr->original_scale[i] * 255.0f > len)
+				len = hdr->original_scale[i] * 255.0f;
+
+		if (vr_wpn_autoscale.value > 0.0f && len > 0.01f)
 		{
-			hdr->scale[i] = hdr->original_scale[i];
-			hdr->scale_origin[i] = hdr->original_scale_origin[i];
+			const float k = (vr_wpn_autoscale.value / len) * correct;
+			for (i = 0; i < 3; i++)
+			{
+				hdr->scale[i] = hdr->original_scale[i] * k;
+				hdr->scale_origin[i] = hdr->original_scale_origin[i] * k;
+			}
+		}
+		else
+		{
+			for (i = 0; i < 3; i++)
+			{
+				hdr->scale[i] = hdr->original_scale[i];
+				hdr->scale_origin[i] = hdr->original_scale_origin[i];
+			}
 		}
 		return;
 	}
@@ -3663,6 +3702,32 @@ void VR_XR_ModAllWeapons (void)
 		hdr = (aliashdr_t *)Mod_Extradata (model);
 		if (hdr)
 			VR_XR_ApplyWeaponModelMod (hdr, name);
+	}
+
+	// Then every viewmodel the map actually precached.
+	//
+	// The loop above only covers weapons named in the cvars, which is quakevr's
+	// list. A mod's weapons are not in it, so nothing sized them and they were
+	// drawn at full viewmodel scale -- forty units of gun at arm's length.
+	// Anything precached as progs/v_*.mdl is a viewmodel by Quake convention,
+	// and VR_XR_ApplyWeaponModelMod falls through to autoscale for the ones it
+	// has no numbers for.
+	{
+		int i;
+		for (i = 1; i < MAX_MODELS && cl.model_precache[i]; i++)
+		{
+			qmodel_t   *m = cl.model_precache[i];
+			aliashdr_t *hdr;
+
+			if (m->type != mod_alias)
+				continue;
+			if (strncmp (m->name, "progs/v_", 8))
+				continue;
+
+			hdr = (aliashdr_t *)Mod_Extradata (m);
+			if (hdr)
+				VR_XR_ApplyWeaponModelMod (hdr, m->name);
+		}
 	}
 }
 
@@ -6018,6 +6083,107 @@ static void XR_SetupWeaponButtons (void)
 	}
 }
 
+/*
+===============
+XR_SetupHolsterWeapons
+
+Draw whatever is stowed in each holster.
+
+quakevr ships these to the client as stats -- STAT_HOLSTERWEAPONMODEL2 through
+5 (V_SetupHolsterViewEnt, view.cpp) -- which this port does not carry. It does
+not need to: the QuakeC already writes the model names to .holsterweaponmodel0
+through 5, those are exposed through QCEXTFIELD, and on a listen server the
+server edict is right there. Same route the off-hand weapon already takes.
+
+Hotspot order matches XR_SetupHolsterSlots so a weapon lands in the holster it
+is drawn beside. quakevr indexes 2..5 for the four drawn slots, the hips and
+uppers, with 0 and 1 being the shoulders it does not draw a holster for.
+===============
+*/
+static void XR_SetupHolsterWeapons (void)
+{
+	// same order as XR_SetupHolsterSlots: L hip, R hip, L upper, R upper
+	static const int field_index[4] = {2, 3, 4, 5};
+	static const int hotspots[4] = {QVR_HS_LEFT_HIP_HOLSTER, QVR_HS_RIGHT_HIP_HOLSTER, QVR_HS_LEFT_UPPER_HOLSTER, QVR_HS_RIGHT_UPPER_HOLSTER};
+	static const float pitches[4] = {-90.0f, -90.0f, -20.0f, -20.0f};
+	static const float yaws[4] = {10.0f, -10.0f, 180.0f, 180.0f};
+
+	qcvm_t						*old_vm = qcvm;
+	qboolean					 switched = false;
+	const struct pr_extfields_s *f;
+	edict_t						*player;
+	int							 i;
+
+	for (i = 0; i < 4; i++)
+		cl.vrholsterwpn[i].model = NULL;
+
+	if (!sv.active || cl.viewentity <= 0)
+		return;
+
+	if (qcvm != &sv.qcvm)
+	{
+		PR_SwitchQCVM (NULL);
+		PR_SwitchQCVM (&sv.qcvm);
+		switched = true;
+	}
+
+	if (qcvm && cl.viewentity < qcvm->num_edicts)
+	{
+		f = &qcvm->extfields;
+		player = EDICT_NUM (cl.viewentity);
+
+		for (i = 0; i < 4; i++)
+		{
+			entity_t   *e = &cl.vrholsterwpn[i];
+			const int	fi = field_index[i];
+			int			ofs = -1;
+			const char *name = NULL;
+			vec3_t		spot;
+
+			switch (fi)
+			{
+			case 2: ofs = f->holsterweaponmodel2; break;
+			case 3: ofs = f->holsterweaponmodel3; break;
+			case 4: ofs = f->holsterweaponmodel4; break;
+			case 5: ofs = f->holsterweaponmodel5; break;
+			}
+
+			if (ofs < 0)
+				continue;
+
+			name = PR_GetString (((string_t *)((byte *)&player->v + ofs))[0]);
+			if (!name || !*name || !strcmp (name, "-1"))
+				continue;
+
+			if (!VR_XR_HolsterSpot (hotspots[i], spot))
+				continue;
+
+			e->model = Mod_ForName (name, false);
+			if (!e->model || e->model->type != mod_alias)
+			{
+				e->model = NULL;
+				continue;
+			}
+
+			VectorCopy (spot, e->origin);
+			e->angles[PITCH] = pitches[i];
+			e->angles[YAW] = VR_XR_BodyYaw () + yaws[i];
+			e->angles[ROLL] = 0.0f;
+			e->frame = 0;
+			e->colormap = vid.colormap;
+			e->alpha = ENTALPHA_DEFAULT;
+			e->netstate.scale = ENTSCALE_DEFAULT;
+			e->horizFlip = (i == 0 || i == 2);
+		}
+	}
+
+	if (switched)
+	{
+		PR_SwitchQCVM (NULL);
+		PR_SwitchQCVM (old_vm);
+	}
+}
+
 static void XR_SetupHolsterSlots (void)
 {
 	static const int	  hotspots[4] = {QVR_HS_LEFT_HIP_HOLSTER, QVR_HS_RIGHT_HIP_HOLSTER, QVR_HS_LEFT_UPPER_HOLSTER, QVR_HS_RIGHT_UPPER_HOLSTER};
@@ -6281,6 +6447,7 @@ void VR_XR_SetupBodyEntities (void)
 
 	XR_SetupOffHandWeapon (player->origin);
 	XR_SetupHolsterSlots ();
+	XR_SetupHolsterWeapons ();
 	XR_SetupWeaponButtons ();
 
 	// --- torso (quakevr V_SetupVRTorsoViewEnt, view.cpp:1222-1249) ---

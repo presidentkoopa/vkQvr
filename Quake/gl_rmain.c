@@ -606,7 +606,7 @@ void R_DrawViewModel (cb_context_t *cbx)
 	// placed in the world. quakevr does the same (gl_rmain.cpp:1592).
 	if (VR_XR_SessionRunning ())
 	{
-		entity_t *body[2 + 4 + 2 + VR_HANDS * 6];
+		entity_t *body[2 + 4 + 2 + 4 + VR_HANDS * 6];
 		int		  n = 0, hand, f;
 
 		body[n++] = &cl.vrtorso;
@@ -615,6 +615,8 @@ void R_DrawViewModel (cb_context_t *cbx)
 			body[n++] = &cl.vrlegholster[hand]; // the worn holsters themselves
 		body[n++] = &cl.vrwpnbutton[0]; // weapon-mounted buttons
 		body[n++] = &cl.vrwpnbutton[1];
+		for (hand = 0; hand < 4; hand++)
+			body[n++] = &cl.vrholsterwpn[hand]; // what is stowed in each holster
 		for (hand = 0; hand < VR_HANDS; hand++)
 		{
 			body[n++] = &cl.vrhand[hand];
