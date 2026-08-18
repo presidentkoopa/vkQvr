@@ -1106,6 +1106,125 @@ R_ShowBoundingBoxes -- johnfitz
 draw bounding boxes -- the server-side boxes, not the renderer cullboxes
 ================
 */
+/*
+================
+R_DrawVRCrosshair
+
+quakevr's world-space crosshair (vr_showfn.cpp:250-375). It is drawn in the
+world rather than on the HUD because a flat 2D crosshair has no depth and sits
+at the wrong distance in stereo.
+
+Modes follow quakevr's: 1 marks the impact point, 2 draws a line to it, 3 draws
+that line faded at both ends. vr_crosshair_depth pins the mark to a fixed range
+instead of tracing; vr_crosshairy nudges it up.
+
+quakevr draws points and lines through the fixed-function pipeline. Vulkan has
+no such thing, so the point becomes three short crossing lines through the
+debug-line pipeline, which needs no new pipeline of its own.
+================
+*/
+static void R_DrawVRCrosshair (cb_context_t *cbx)
+{
+	vec3_t	 origin, angles, fwd, right, up, end, impact;
+	uint32_t color, faded;
+	float	 alpha, size;
+	int		 mode;
+
+	mode = (int)vr_crosshair.value;
+	if (mode <= 0 || !VR_XR_SessionRunning ())
+		return;
+	if (cls.state != ca_connected || cls.signon != SIGNONS || !cl.worldmodel || cl.intermission)
+		return;
+	if (cl.viewentity <= 0 || cl.viewentity >= cl.max_edicts || !cl.entities)
+		return;
+	if (!VR_XR_WeaponPose (cl.entities[cl.viewentity].origin, origin, angles))
+		return;
+
+	// the drawn weapon carries inverted pitch; undo it for a real direction
+	angles[PITCH] = -angles[PITCH];
+	AngleVectors (angles, fwd, right, up);
+
+	if (vr_crosshair_depth.value > 0.0f)
+		VectorMA (origin, vr_crosshair_depth.value, fwd, impact);
+	else
+	{
+		VectorMA (origin, 4096.0f, fwd, end);
+		TraceLine (origin, end, impact);
+		if (VectorLength (impact) == 0.0f)
+			VectorCopy (end, impact);
+	}
+	impact[2] += vr_crosshairy.value * 10.0f;
+
+	alpha = CLAMP (0.0f, vr_crosshair_alpha.value, 1.0f);
+	size = q_max (1.0f, vr_crosshair_size.value);
+
+	// packed as ABGR, matching R_FillDebugVertex's callers
+	color = ((uint32_t)(alpha * 255.0f) << 24) | 0x0000ffu;
+	faded = ((uint32_t)(alpha * 2.55f) << 24) | 0x0000ffu;
+
+	R_BeginDebugUtilsLabel (cbx, "vr crosshair");
+	R_BindPipeline (cbx, VK_PIPELINE_BIND_POINT_GRAPHICS, vulkan_globals.debug_lines_pipeline[R_MainPassPipelineVariant (cbx->render_pass_index)]);
+
+	if (mode == 1)
+	{
+		// a small three-axis cross standing in for a point
+		VkBuffer	   vb;
+		VkDeviceSize   vbo;
+		basicvertex_t *v = (basicvertex_t *)R_VertexAllocate (6 * sizeof (basicvertex_t), &vb, &vbo);
+		vec3_t		   a, b;
+		int			   i;
+
+		for (i = 0; i < 3; i++)
+		{
+			const float *axis = (i == 0) ? fwd : ((i == 1) ? right : up);
+			VectorMA (impact, -size, axis, a);
+			VectorMA (impact, size, axis, b);
+			R_FillDebugVertex (&v[i * 2 + 0], a, color);
+			R_FillDebugVertex (&v[i * 2 + 1], b, color);
+		}
+
+		vulkan_globals.vk_cmd_bind_vertex_buffers (cbx->cb, 0, 1, &vb, &vbo);
+		vulkan_globals.vk_cmd_draw (cbx->cb, 6, 1, 0, 0);
+	}
+	else
+	{
+		VkBuffer	   vb;
+		VkDeviceSize   vbo;
+		basicvertex_t *v = (basicvertex_t *)R_VertexAllocate (6 * sizeof (basicvertex_t), &vb, &vbo);
+		vec3_t		   mid_a, mid_b;
+		int			   i;
+
+		// quakevr's 0.15 and 0.70 along the ray, where the line is at full
+		// strength before fading out at both ends
+		for (i = 0; i < 3; i++)
+		{
+			mid_a[i] = origin[i] + (impact[i] - origin[i]) * 0.15f;
+			mid_b[i] = origin[i] + (impact[i] - origin[i]) * 0.70f;
+		}
+
+		if (mode == 2)
+		{
+			R_FillDebugVertex (&v[0], origin, color);
+			R_FillDebugVertex (&v[1], impact, color);
+			vulkan_globals.vk_cmd_bind_vertex_buffers (cbx->cb, 0, 1, &vb, &vbo);
+			vulkan_globals.vk_cmd_draw (cbx->cb, 2, 1, 0, 0);
+		}
+		else
+		{
+			R_FillDebugVertex (&v[0], origin, faded);
+			R_FillDebugVertex (&v[1], mid_a, color);
+			R_FillDebugVertex (&v[2], mid_a, color);
+			R_FillDebugVertex (&v[3], mid_b, color);
+			R_FillDebugVertex (&v[4], mid_b, color);
+			R_FillDebugVertex (&v[5], impact, faded);
+			vulkan_globals.vk_cmd_bind_vertex_buffers (cbx->cb, 0, 1, &vb, &vbo);
+			vulkan_globals.vk_cmd_draw (cbx->cb, 6, 1, 0, 0);
+		}
+	}
+
+	R_EndDebugUtilsLabel (cbx);
+}
+
 static void R_ShowBoundingBoxes (cb_context_t *cbx)
 {
 	vec3_t	 mins, maxs, center;
@@ -1550,6 +1669,7 @@ static void R_DrawViewModelTask (void *unused)
 	R_ShowTris (cbx);	   // johnfitz
 	R_ShowSkeletons (cbx);
 	R_ShowBoundingBoxes (cbx); // johnfitz
+	R_DrawVRCrosshair (cbx);
 	R_ShowPointFile (cbx);
 }
 

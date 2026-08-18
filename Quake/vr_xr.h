@@ -228,6 +228,11 @@ qboolean VR_XR_HudMatrix (float out[16], float canvas_w, float canvas_h);
 extern cvar_t vr_menu_scale;
 extern cvar_t vr_menu_distance;
 extern cvar_t vr_hud_enabled;
+extern cvar_t vr_crosshair;
+extern cvar_t vr_crosshair_depth;
+extern cvar_t vr_crosshair_size;
+extern cvar_t vr_crosshair_alpha;
+extern cvar_t vr_crosshairy;
 
 extern cvar_t vr_vrtorso_enabled;
 extern cvar_t vr_vrtorso_x_offset;
