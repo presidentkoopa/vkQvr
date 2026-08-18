@@ -147,6 +147,60 @@ cvar_t vr_2h_spread_reduction = {"vr_2h_spread_reduction", "0.5", CVAR_ARCHIVE};
 cvar_t vr_2h_throw_velocity_mult = {"vr_2h_throw_velocity_mult", "1.4", CVAR_ARCHIVE};
 cvar_t vr_verbosebots = {"vr_verbosebots", "0", CVAR_ARCHIVE};
 
+/*
+================================================================================
+
+	HAND ASSEMBLY OFFSETS
+
+	The hand is not one model: it is hand_base.mdl plus five finger models, each
+	positioned separately. quakevr composes them through a chain of offsets that
+	accumulate (view.cpp fingerIdxToOffset) -- a term for the whole hand, then
+	one for the fingers as a group, then one per finger, with an extra term
+	applied to the off hand so the two can be tuned apart.
+
+	Every one defaults to 0.0, so out of the box the parts sit exactly where the
+	models put them. They exist to be dialled in.
+
+================================================================================
+*/
+
+// whole hand: base and fingers together
+cvar_t vr_fingers_and_base_x = {"vr_fingers_and_base_x", "0.0", CVAR_ARCHIVE};
+cvar_t vr_fingers_and_base_y = {"vr_fingers_and_base_y", "0.0", CVAR_ARCHIVE};
+cvar_t vr_fingers_and_base_z = {"vr_fingers_and_base_z", "0.0", CVAR_ARCHIVE};
+
+// added on top for the off hand only
+cvar_t vr_fingers_and_base_offhand_x = {"vr_fingers_and_base_offhand_x", "0.0", CVAR_ARCHIVE};
+cvar_t vr_fingers_and_base_offhand_y = {"vr_fingers_and_base_offhand_y", "0.0", CVAR_ARCHIVE};
+cvar_t vr_fingers_and_base_offhand_z = {"vr_fingers_and_base_offhand_z", "0.0", CVAR_ARCHIVE};
+
+// all five fingers as a group, not the palm
+cvar_t vr_fingers_x = {"vr_fingers_x", "0.0", CVAR_ARCHIVE};
+cvar_t vr_fingers_y = {"vr_fingers_y", "0.0", CVAR_ARCHIVE};
+cvar_t vr_fingers_z = {"vr_fingers_z", "0.0", CVAR_ARCHIVE};
+
+// the palm alone
+cvar_t vr_finger_base_x = {"vr_finger_base_x", "0.0", CVAR_ARCHIVE};
+cvar_t vr_finger_base_y = {"vr_finger_base_y", "0.0", CVAR_ARCHIVE};
+cvar_t vr_finger_base_z = {"vr_finger_base_z", "0.0", CVAR_ARCHIVE};
+
+// and one finger at a time
+cvar_t vr_finger_thumb_x = {"vr_finger_thumb_x", "0.0", CVAR_ARCHIVE};
+cvar_t vr_finger_thumb_y = {"vr_finger_thumb_y", "0.0", CVAR_ARCHIVE};
+cvar_t vr_finger_thumb_z = {"vr_finger_thumb_z", "0.0", CVAR_ARCHIVE};
+cvar_t vr_finger_index_x = {"vr_finger_index_x", "0.0", CVAR_ARCHIVE};
+cvar_t vr_finger_index_y = {"vr_finger_index_y", "0.0", CVAR_ARCHIVE};
+cvar_t vr_finger_index_z = {"vr_finger_index_z", "0.0", CVAR_ARCHIVE};
+cvar_t vr_finger_middle_x = {"vr_finger_middle_x", "0.0", CVAR_ARCHIVE};
+cvar_t vr_finger_middle_y = {"vr_finger_middle_y", "0.0", CVAR_ARCHIVE};
+cvar_t vr_finger_middle_z = {"vr_finger_middle_z", "0.0", CVAR_ARCHIVE};
+cvar_t vr_finger_ring_x = {"vr_finger_ring_x", "0.0", CVAR_ARCHIVE};
+cvar_t vr_finger_ring_y = {"vr_finger_ring_y", "0.0", CVAR_ARCHIVE};
+cvar_t vr_finger_ring_z = {"vr_finger_ring_z", "0.0", CVAR_ARCHIVE};
+cvar_t vr_finger_pinky_x = {"vr_finger_pinky_x", "0.0", CVAR_ARCHIVE};
+cvar_t vr_finger_pinky_y = {"vr_finger_pinky_y", "0.0", CVAR_ARCHIVE};
+cvar_t vr_finger_pinky_z = {"vr_finger_pinky_z", "0.0", CVAR_ARCHIVE};
+
 cvar_t vr_finger_grip_bias = {"vr_finger_grip_bias", "0.0", CVAR_ARCHIVE};
 cvar_t vr_finger_auto_close_thumb = {"vr_finger_auto_close_thumb", "1", CVAR_ARCHIVE};
 cvar_t vr_finger_blending = {"vr_finger_blending", "1", CVAR_ARCHIVE};
@@ -304,6 +358,33 @@ void VR_XR_Init (void)
 	Cvar_RegisterVariable (&vr_leg_holster_model_y_offset);
 	Cvar_RegisterVariable (&vr_leg_holster_model_z_offset);
 
+	Cvar_RegisterVariable (&vr_fingers_and_base_x);
+	Cvar_RegisterVariable (&vr_fingers_and_base_y);
+	Cvar_RegisterVariable (&vr_fingers_and_base_z);
+	Cvar_RegisterVariable (&vr_fingers_and_base_offhand_x);
+	Cvar_RegisterVariable (&vr_fingers_and_base_offhand_y);
+	Cvar_RegisterVariable (&vr_fingers_and_base_offhand_z);
+	Cvar_RegisterVariable (&vr_fingers_x);
+	Cvar_RegisterVariable (&vr_fingers_y);
+	Cvar_RegisterVariable (&vr_fingers_z);
+	Cvar_RegisterVariable (&vr_finger_base_x);
+	Cvar_RegisterVariable (&vr_finger_base_y);
+	Cvar_RegisterVariable (&vr_finger_base_z);
+	Cvar_RegisterVariable (&vr_finger_thumb_x);
+	Cvar_RegisterVariable (&vr_finger_thumb_y);
+	Cvar_RegisterVariable (&vr_finger_thumb_z);
+	Cvar_RegisterVariable (&vr_finger_index_x);
+	Cvar_RegisterVariable (&vr_finger_index_y);
+	Cvar_RegisterVariable (&vr_finger_index_z);
+	Cvar_RegisterVariable (&vr_finger_middle_x);
+	Cvar_RegisterVariable (&vr_finger_middle_y);
+	Cvar_RegisterVariable (&vr_finger_middle_z);
+	Cvar_RegisterVariable (&vr_finger_ring_x);
+	Cvar_RegisterVariable (&vr_finger_ring_y);
+	Cvar_RegisterVariable (&vr_finger_ring_z);
+	Cvar_RegisterVariable (&vr_finger_pinky_x);
+	Cvar_RegisterVariable (&vr_finger_pinky_y);
+	Cvar_RegisterVariable (&vr_finger_pinky_z);
 	Cvar_RegisterVariable (&vr_finger_grip_bias);
 	Cvar_RegisterVariable (&vr_finger_auto_close_thumb);
 	Cvar_RegisterVariable (&vr_finger_blending);
@@ -3872,6 +3953,76 @@ static int XR_ComputeHotSpot (const vec3_t hand_world, const vec3_t player_origi
 ================================================================================
 */
 
+// Indices into the hand: the five fingers keep the order of xr_finger_models,
+// and the palm follows them.
+#define XR_HAND_PART_BASE 5
+
+/*
+===============
+XR_HandPartOffset
+
+quakevr's fingerIdxToOffset (view.cpp:1370-1408). The terms accumulate rather
+than override: every part gets the whole-hand offset, the off hand gets a
+further term on top of that so the two hands can be tuned apart, and only the
+fingers get the fingers-as-a-group term before their own individual one. The
+palm takes the base term instead and never sees the group term.
+===============
+*/
+static void XR_HandPartOffset (int part, int hand, vec3_t out)
+{
+	out[0] = vr_fingers_and_base_x.value;
+	out[1] = vr_fingers_and_base_y.value;
+	out[2] = vr_fingers_and_base_z.value;
+
+	if (hand == VR_XR_OffHand ())
+	{
+		out[0] += vr_fingers_and_base_offhand_x.value;
+		out[1] += vr_fingers_and_base_offhand_y.value;
+		out[2] += vr_fingers_and_base_offhand_z.value;
+	}
+
+	if (part == XR_HAND_PART_BASE)
+	{
+		out[0] += vr_finger_base_x.value;
+		out[1] += vr_finger_base_y.value;
+		out[2] += vr_finger_base_z.value;
+		return;
+	}
+
+	out[0] += vr_fingers_x.value;
+	out[1] += vr_fingers_y.value;
+	out[2] += vr_fingers_z.value;
+
+	switch (part)
+	{
+	case VR_FINGER_THUMB:
+		out[0] += vr_finger_thumb_x.value;
+		out[1] += vr_finger_thumb_y.value;
+		out[2] += vr_finger_thumb_z.value;
+		break;
+	case VR_FINGER_INDEX:
+		out[0] += vr_finger_index_x.value;
+		out[1] += vr_finger_index_y.value;
+		out[2] += vr_finger_index_z.value;
+		break;
+	case VR_FINGER_MIDDLE:
+		out[0] += vr_finger_middle_x.value;
+		out[1] += vr_finger_middle_y.value;
+		out[2] += vr_finger_middle_z.value;
+		break;
+	case VR_FINGER_RING:
+		out[0] += vr_finger_ring_x.value;
+		out[1] += vr_finger_ring_y.value;
+		out[2] += vr_finger_ring_z.value;
+		break;
+	default:
+		out[0] += vr_finger_pinky_x.value;
+		out[1] += vr_finger_pinky_y.value;
+		out[2] += vr_finger_pinky_z.value;
+		break;
+	}
+}
+
 static const char *xr_finger_models[5] = {
 	"progs/finger_thumb.mdl", "progs/finger_index.mdl", "progs/finger_middle.mdl", "progs/finger_ring.mdl", "progs/finger_pinky.mdl"};
 
@@ -3888,6 +4039,7 @@ static void XR_SetupHandEntity (int hand, const vec3_t player_origin)
 	const vr_hand_t *h = &vr_xr_hand[hand];
 	entity_t		*palm = &cl.vrhand[hand];
 	vec3_t			 world, angles, vel;
+	vec3_t			 fwd, right, up, ofs;
 	int				 i;
 
 	if (!h->tracked)
@@ -3901,7 +4053,22 @@ static void XR_SetupHandEntity (int hand, const vec3_t player_origin)
 
 	XR_HandToWorld (h, player_origin, world, angles, vel);
 
-	VectorCopy (world, palm->origin);
+	// quakevr builds the hand out of six separate models, each with its own
+	// offset, and applies that offset inside the hand's own rotated frame --
+	// fingerIdxToOffset supplies it (view.cpp:1370-1408) and the anchor matrix
+	// translates by it after the rotations, in
+	// VR_GetScaledAndAngledAliasVertexPosition. Rotating it here is the same
+	// thing: a local translate inside the entity matrix.
+	//
+	// Quake's local axes are X forward, Y left, Z up, and AngleVectors hands
+	// back right rather than left, hence the negated Y term.
+	AngleVectors (angles, fwd, right, up);
+
+	XR_HandPartOffset (XR_HAND_PART_BASE, hand, ofs);
+	palm->origin[0] = world[0] + ofs[0] * fwd[0] - ofs[1] * right[0] + ofs[2] * up[0];
+	palm->origin[1] = world[1] + ofs[0] * fwd[1] - ofs[1] * right[1] + ofs[2] * up[1];
+	palm->origin[2] = world[2] + ofs[0] * fwd[2] - ofs[1] * right[2] + ofs[2] * up[2];
+
 	VectorCopy (angles, palm->angles);
 	palm->angles[PITCH] = -palm->angles[PITCH]; // alias models draw pitch inverted
 	// hand_base.mdl, not hand.mdl. hand.mdl is quakevr's empty-hand *weapon*
@@ -3921,7 +4088,11 @@ static void XR_SetupHandEntity (int hand, const vec3_t player_origin)
 	{
 		entity_t *f = &cl.vrfinger[hand][i];
 
-		VectorCopy (palm->origin, f->origin);
+		XR_HandPartOffset (i, hand, ofs);
+		f->origin[0] = world[0] + ofs[0] * fwd[0] - ofs[1] * right[0] + ofs[2] * up[0];
+		f->origin[1] = world[1] + ofs[0] * fwd[1] - ofs[1] * right[1] + ofs[2] * up[1];
+		f->origin[2] = world[2] + ofs[0] * fwd[2] - ofs[1] * right[2] + ofs[2] * up[2];
+
 		VectorCopy (palm->angles, f->angles);
 		f->model = Mod_ForName (xr_finger_models[i], false);
 		// curl 0..5 selects the frame; clamp because a model may ship fewer
