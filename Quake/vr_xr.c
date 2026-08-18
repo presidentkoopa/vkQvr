@@ -150,6 +150,15 @@ cvar_t vr_gunyaw = {"vr_gunyaw", "0", CVAR_ARCHIVE};
 // controller pose and its models share a frame; the OpenXR aim pose is a
 // pointing ray with its own roll about the barrel, so the third axis is needed
 // to seat the models in the hand.
+// Two-handed aiming. quakevr's numbers (vr_cvars.cpp:88-95, 174).
+// vr_2h_mode: 0 off, 1 hands only, 2 hands plus virtual stock.
+cvar_t vr_2h_mode = {"vr_2h_mode", "2", CVAR_ARCHIVE};
+cvar_t vr_2h_angle_threshold = {"vr_2h_angle_threshold", "0.65", CVAR_ARCHIVE};
+cvar_t vr_2h_disable_angle_threshold = {"vr_2h_disable_angle_threshold", "0", CVAR_ARCHIVE};
+cvar_t vr_2h_virtual_stock_factor = {"vr_2h_virtual_stock_factor", "0.5", CVAR_ARCHIVE};
+cvar_t vr_virtual_stock_thresh = {"vr_virtual_stock_thresh", "10", CVAR_ARCHIVE};
+cvar_t vr_show_virtual_stock = {"vr_show_virtual_stock", "0", CVAR_ARCHIVE};
+
 cvar_t vr_gunroll = {"vr_gunroll", "0", CVAR_ARCHIVE};
 cvar_t vr_gun_z_offset = {"vr_gun_z_offset", "0", CVAR_ARCHIVE};
 /*
@@ -395,6 +404,12 @@ void VR_XR_Init (void)
 	Cvar_RegisterVariable (&vr_melee_threshold);
 	Cvar_RegisterVariable (&vr_haptics);
 	Cvar_RegisterVariable (&vr_laser);
+	Cvar_RegisterVariable (&vr_2h_mode);
+	Cvar_RegisterVariable (&vr_2h_angle_threshold);
+	Cvar_RegisterVariable (&vr_2h_disable_angle_threshold);
+	Cvar_RegisterVariable (&vr_2h_virtual_stock_factor);
+	Cvar_RegisterVariable (&vr_virtual_stock_thresh);
+	Cvar_RegisterVariable (&vr_show_virtual_stock);
 	Cvar_RegisterVariable (&vr_two_handed);
 	Cvar_RegisterVariable (&vr_two_hand_dist);
 	Cvar_RegisterVariable (&vr_height_calibration);
@@ -3041,28 +3056,85 @@ the main hand to count as supporting the weapon.
 */
 static qboolean XR_TwoHandedAim (int main_hand, vec3_t out_angles)
 {
-	const int	off_hand = main_hand ^ 1;
-	vec3_t		dir;
-	float		len;
+	static float aim_transition = 0.0f;	  // 0 one-handed, 1 fully two-handed
+	static float stock_transition = 0.0f; // 0 hands only, 1 shouldered
 
-	if (!vr_two_handed.value)
+	const int off_hand = main_hand ^ 1;
+	vec3_t	  hand_diff, hand_dir, shoulder, shoulder_diff, avg_diff, avg_dir;
+	vec3_t	  orig_dir, right, up, stock_dir, mix_dir;
+	float	  len, dot, speed;
+	qboolean  aiming, use_stock;
+	int		  i;
+
+	if (!vr_two_handed.value || vr_2h_mode.value == 0)
 		return false;
 	if (!vr_xr_hand[main_hand].tracked || !vr_xr_hand[off_hand].tracked)
 		return false;
-	if (vr_xr_hand[off_hand].grip < 0.5f)
+
+	// the barrel runs from the holding hand out to the supporting one
+	VectorSubtract (vr_xr_hand[off_hand].pos, vr_xr_hand[main_hand].pos, hand_diff);
+	len = VectorLength (hand_diff);
+	if (len < 0.001f)
+		return false;
+	VectorScale (hand_diff, 1.0f / len, hand_dir);
+
+	// Where the weapon already points, which is what the blend starts from.
+	AngleVectors (vr_xr_hand[main_hand].aim_angles, orig_dir, right, up);
+
+	// quakevr's dynamic grab distance, vr.cpp VR_GoodDistanceForDynamic2HGrabImpl
+	aiming = (vr_xr_hand[off_hand].grip >= 0.5f) && (len > 5.0f) && (len < 25.0f);
+
+	// and its angle gate: the supporting hand has to be roughly out along the
+	// barrel, not off to one side holding something else
+	dot = DotProduct (hand_dir, orig_dir);
+	if (!vr_2h_disable_angle_threshold.value && dot <= vr_2h_angle_threshold.value)
+		aiming = false;
+
+	// The virtual stock. With the weapon drawn back near the shoulder, aiming
+	// along shoulder-to-hand is steadier than hand-to-hand, and quakevr mixes
+	// the two rather than switching (VR_Get2HVirtualStockMix).
+	shoulder[0] = xr_last_head_pos[0] + vr_shoulder_offset_x.value;
+	shoulder[1] = xr_last_head_pos[1] + (main_hand == VR_XR_MainHand () ? -vr_shoulder_offset_y.value : vr_shoulder_offset_y.value);
+	shoulder[2] = xr_last_head_pos[2] - vr_shoulder_offset_z.value;
+
+	VectorSubtract (vr_xr_hand[off_hand].pos, shoulder, shoulder_diff);
+
+	{
+		vec3_t to_shoulder;
+		VectorSubtract (vr_xr_hand[main_hand].pos, shoulder, to_shoulder);
+		use_stock = (vr_2h_mode.value == 2) && (VectorLength (to_shoulder) < vr_virtual_stock_thresh.value);
+	}
+
+	for (i = 0; i < 3; i++)
+		avg_diff[i] = hand_diff[i] + (shoulder_diff[i] - hand_diff[i]) * vr_2h_virtual_stock_factor.value;
+	VectorNormalize (avg_diff);
+	VectorCopy (avg_diff, avg_dir);
+
+	// Both transitions ease rather than snap, at quakevr's rate of 5 per
+	// second, so picking the weapon up with the second hand does not jerk the
+	// aim across (transitionVar, vr.cpp:2960-2966).
+	speed = (float)(cl.time - cl.oldtime) * 5.0f;
+	aim_transition += aiming ? speed : -speed;
+	aim_transition = CLAMP (0.0f, aim_transition, 1.0f);
+	stock_transition += (use_stock && aiming) ? speed : -speed;
+	stock_transition = CLAMP (0.0f, stock_transition, 1.0f);
+
+	if (aim_transition <= 0.0f)
 		return false;
 
-	VectorSubtract (vr_xr_hand[main_hand].pos, vr_xr_hand[off_hand].pos, dir);
-	len = VectorLength (dir);
+	for (i = 0; i < 3; i++)
+	{
+		stock_dir[i] = hand_dir[i] + (avg_dir[i] - hand_dir[i]) * stock_transition;
+		mix_dir[i] = orig_dir[i] + (stock_dir[i] - orig_dir[i]) * aim_transition;
+	}
+	VectorNormalize (mix_dir);
 
-	// too far apart and the off hand is doing something else entirely
-	if (len < 1.0f || len > vr_two_hand_dist.value)
-		return false;
-
-	// front hand supports, rear hand holds: the barrel runs off-hand -> main
-	out_angles[YAW] = RAD2DEG (atan2f (dir[1], dir[0]));
-	out_angles[PITCH] = -RAD2DEG (asinf (CLAMP (-1.0f, dir[2] / len, 1.0f)));
-	out_angles[ROLL] = 0.0f;
+	// atan2 rather than asin, which saturates at straight up and straight down
+	out_angles[YAW] = RAD2DEG (atan2f (mix_dir[1], mix_dir[0]));
+	out_angles[PITCH] = -RAD2DEG (atan2f (mix_dir[2], sqrtf (mix_dir[0] * mix_dir[0] + mix_dir[1] * mix_dir[1])));
+	// roll stays with the holding hand: two-handing a weapon steadies where it
+	// points, it does not stop the wrist rotating it
+	out_angles[ROLL] = vr_xr_hand[main_hand].aim_angles[ROLL];
 	return true;
 }
 
