@@ -3877,7 +3877,7 @@ static void Mod_CalcAliasBounds (qmodel_t *mod, aliashdr_t *a, int numvertexes, 
 		if (a->numposes > 0 && a->numverts > 0)
 		{
 			a->anchorverts = (trivertx_t *)Mem_Alloc (sizeof (trivertx_t) * a->numverts);
-			a->gripvert = -1;
+			a->gripvalid = false;
 			memcpy (a->anchorverts, poseverts[0], sizeof (trivertx_t) * a->numverts);
 		}
 

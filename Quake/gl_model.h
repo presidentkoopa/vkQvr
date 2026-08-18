@@ -380,8 +380,9 @@ typedef struct aliashdr_s
 	// GPU after load. MDL models only, and pose 0 only -- a grip point barely
 	// moves across a weapon's animation. NULL when not kept.
 	trivertx_t		   *anchorverts;
-	// Cached result of the grip search over anchorverts; -1 until computed.
-	int					gripvert;
+	// Cached result of the grip search over anchorverts.
+	vec3_t				grippoint;
+	qboolean			gripvalid;
 	int					numindexes;
 	int					numverts_vbo;
 	int					numposes;

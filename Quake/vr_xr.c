@@ -4178,9 +4178,9 @@ everything that is not a plain MDL.
 */
 /*
 ===============
-XR_FindGripVertex
+XR_FindGripPoint
 
-Which vertex of a weapon is its grip.
+Where a weapon's grip is, in the model's own raw vertex coordinates.
 
 There is no answer to lift from quakevr here. Its HandAnchorVertex defaults to
 0 for every weapon and no InitWeaponCVars call overrides it, but vertex 0 is
@@ -4197,16 +4197,16 @@ weapons all share that shape, whether shotgun, axe or nailgun.
 Cached per model, since it depends only on the mesh.
 ===============
 */
-static int XR_FindGripVertex (aliashdr_t *hdr)
+static void XR_FindGripPoint (aliashdr_t *hdr, vec3_t out_raw)
 {
-	float min_x, max_x, cutoff, best_z;
-	int	  i, best;
+	float min_x, max_x, cutoff, min_z, max_z, z_cutoff, sum[3];
+	int	  i, count;
 
-	if (!hdr || !hdr->anchorverts || hdr->numverts <= 0)
-		return 0;
-
-	if (hdr->gripvert >= 0)
-		return hdr->gripvert;
+	if (hdr->gripvalid)
+	{
+		VectorCopy (hdr->grippoint, out_raw);
+		return;
+	}
 
 	min_x = max_x = (float)hdr->anchorverts[0].v[0];
 	for (i = 1; i < hdr->numverts; i++)
@@ -4218,30 +4218,64 @@ static int XR_FindGripVertex (aliashdr_t *hdr)
 			max_x = x;
 	}
 
-	// the rearmost tenth of the model's length counts as "the back"
-	cutoff = min_x + (max_x - min_x) * 0.1f;
+	// the rearmost fifth of the model's length counts as "the back"
+	cutoff = min_x + (max_x - min_x) * 0.2f;
 
-	best = 0;
-	best_z = FLT_MAX;
+	// within that, the lower half, so the barrel and receiver do not drag the
+	// answer up out of the grip
+	min_z = 255.0f;
+	max_z = 0.0f;
+	for (i = 0; i < hdr->numverts; i++)
+	{
+		const float z = (float)hdr->anchorverts[i].v[2];
+		if ((float)hdr->anchorverts[i].v[0] > cutoff)
+			continue;
+		if (z < min_z)
+			min_z = z;
+		if (z > max_z)
+			max_z = z;
+	}
+	z_cutoff = min_z + (max_z - min_z) * 0.5f;
+
+	// Average them rather than taking the extreme. The lowest vertex is on the
+	// outer surface by definition -- the bottom edge of the stock -- and a hand
+	// anchored there hangs off the gun instead of closing around it. The mean
+	// of the region sits inside the grip, where a fist actually goes.
+	sum[0] = sum[1] = sum[2] = 0.0f;
+	count = 0;
 	for (i = 0; i < hdr->numverts; i++)
 	{
 		if ((float)hdr->anchorverts[i].v[0] > cutoff)
 			continue;
-		if ((float)hdr->anchorverts[i].v[2] < best_z)
-		{
-			best_z = (float)hdr->anchorverts[i].v[2];
-			best = i;
-		}
+		if ((float)hdr->anchorverts[i].v[2] > z_cutoff)
+			continue;
+		sum[0] += (float)hdr->anchorverts[i].v[0];
+		sum[1] += (float)hdr->anchorverts[i].v[1];
+		sum[2] += (float)hdr->anchorverts[i].v[2];
+		count++;
 	}
 
-	hdr->gripvert = best;
-	return best;
+	if (count > 0)
+	{
+		hdr->grippoint[0] = sum[0] / (float)count;
+		hdr->grippoint[1] = sum[1] / (float)count;
+		hdr->grippoint[2] = sum[2] / (float)count;
+	}
+	else
+	{
+		hdr->grippoint[0] = (float)hdr->anchorverts[0].v[0];
+		hdr->grippoint[1] = (float)hdr->anchorverts[0].v[1];
+		hdr->grippoint[2] = (float)hdr->anchorverts[0].v[2];
+	}
+
+	hdr->gripvalid = true;
+	VectorCopy (hdr->grippoint, out_raw);
 }
 
 static qboolean XR_AliasVertexWorldPos (entity_t *e, int vertex_index, const vec3_t extra_offsets, vec3_t out)
 {
 	aliashdr_t *hdr;
-	vec3_t		fwd, right, up, local, v;
+	vec3_t		fwd, right, up, local, v, raw;
 	float		pitch_flipped[3];
 	int			i;
 
@@ -4253,13 +4287,20 @@ static qboolean XR_AliasVertexWorldPos (entity_t *e, int vertex_index, const vec
 		return false;
 
 	if (vertex_index < 0)
-		vertex_index = XR_FindGripVertex (hdr);
-
-	vertex_index = CLAMP (0, vertex_index, hdr->numverts - 1);
+	{
+		XR_FindGripPoint (hdr, raw);
+	}
+	else
+	{
+		vertex_index = CLAMP (0, vertex_index, hdr->numverts - 1);
+		raw[0] = (float)hdr->anchorverts[vertex_index].v[0];
+		raw[1] = (float)hdr->anchorverts[vertex_index].v[1];
+		raw[2] = (float)hdr->anchorverts[vertex_index].v[2];
+	}
 
 	// the vertex in model space, then the model's own transform
 	for (i = 0; i < 3; i++)
-		v[i] = (float)hdr->anchorverts[vertex_index].v[i] * hdr->scale[i] + hdr->scale_origin[i] + extra_offsets[i];
+		v[i] = raw[i] * hdr->scale[i] + hdr->scale_origin[i] + extra_offsets[i];
 
 	// mirrored models put their grip on the other side
 	if (e->horizFlip)
