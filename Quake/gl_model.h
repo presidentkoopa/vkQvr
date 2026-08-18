@@ -375,6 +375,11 @@ typedef struct aliashdr_s
 	synctype_t			synctype;
 	int					flags;
 	float				size;
+	// VR: a CPU copy of pose 0's vertices, kept because the hand is anchored to a
+	// vertex of the weapon it holds and the real vertex data lives only on the
+	// GPU after load. MDL models only, and pose 0 only -- a grip point barely
+	// moves across a weapon's animation. NULL when not kept.
+	trivertx_t		   *anchorverts;
 	int					numindexes;
 	int					numverts_vbo;
 	int					numposes;
