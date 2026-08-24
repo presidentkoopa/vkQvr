@@ -170,6 +170,9 @@ cvar_t vr_wpn_autoscale = {"vr_wpn_autoscale", "26", CVAR_ARCHIVE};
 
 // Fine adjustment for a holstered weapon, in model axes: x forward, y right,
 // z up, relative to the centred position. Tuning knobs, zero by default.
+// Barrel angle of a holstered weapon: -90 is straight down.
+cvar_t		 vr_holster_wpn_pitch_hip = {"vr_holster_wpn_pitch_hip", "-90", CVAR_ARCHIVE};
+cvar_t		 vr_holster_wpn_pitch_upper = {"vr_holster_wpn_pitch_upper", "-90", CVAR_ARCHIVE};
 cvar_t		 vr_holster_wpn_ofs_x = {"vr_holster_wpn_ofs_x", "0", CVAR_ARCHIVE};
 cvar_t		 vr_holster_wpn_ofs_y = {"vr_holster_wpn_ofs_y", "0", CVAR_ARCHIVE};
 cvar_t		 vr_holster_wpn_ofs_z = {"vr_holster_wpn_ofs_z", "0", CVAR_ARCHIVE};
@@ -648,9 +651,17 @@ void VR_XR_Init (void)
 	Cvar_RegisterVariable (&vr_hand_grips_weapon);
 	Cvar_RegisterVariable (&vr_grip_vertex);
 	Cvar_RegisterVariable (&vr_wpn_autoscale);
+	Cvar_RegisterVariable (&vr_holster_wpn_pitch_hip);
+	Cvar_RegisterVariable (&vr_holster_wpn_pitch_upper);
 	Cvar_RegisterVariable (&vr_holster_wpn_ofs_x);
 	Cvar_RegisterVariable (&vr_holster_wpn_ofs_y);
 	Cvar_RegisterVariable (&vr_holster_wpn_ofs_z);
+	Cvar_RegisterVariable (&vr_holster_impulse_lefthip);
+	Cvar_RegisterVariable (&vr_holster_impulse_righthip);
+	Cvar_RegisterVariable (&vr_holster_impulse_leftupper);
+	Cvar_RegisterVariable (&vr_holster_impulse_rightupper);
+	Cvar_RegisterVariable (&vr_holster_impulse_leftshoulder);
+	Cvar_RegisterVariable (&vr_holster_impulse_rightshoulder);
 	Cvar_RegisterVariable (&vr_hand_scale);
 	Cvar_RegisterVariable (&vr_hand_pitch);
 	Cvar_RegisterVariable (&vr_hand_yaw);
@@ -4791,6 +4802,78 @@ unsigned int VR_XR_Buttons (void)
 }
 
 /*
+===============
+XR_ModHasVRHolsters
+
+True for progs that carry the real thing -- currently just vrqc, but any mod
+built against the same VR QuakeC would qualify too. Everything else (Arcane
+Dimensions included) has no holsterweaponN fields at all, which is what
+XR_HolsterGrabImpulse below is for.
+===============
+*/
+static qboolean XR_ModHasVRHolsters (void)
+{
+	return qcvm && qcvm->extfields.holsterweapon2 >= 0;
+}
+
+/*
+===============
+XR_HolsterGrabImpulse
+
+Mod-agnostic holsters. A mod with no VR QuakeC has no holster contents to draw
+from or write back to, so there is nothing to seat a real weapon model on --
+but every mod's own code still answers to the weapon-select impulses (1-8)
+the number keys have sent since 1996. Reaching to a hotspot and squeezing the
+grip sends the impulse configured for that spot, same as pressing the number
+key would. No visual holster, no model, just the input.
+
+Skipped entirely when the mod has real holsters (XR_ModHasVRHolsters), so
+this never fights the richer system vrqc already runs.
+===============
+*/
+static int XR_HolsterGrabImpulse (void)
+{
+	static qboolean was_grabbing[2] = {false, false};
+	int				hand;
+
+	if (XR_ModHasVRHolsters ())
+		return 0;
+
+	for (hand = 0; hand < 2; hand++)
+	{
+		const qboolean grabbing = vr_xr_hand[hand].tracked && VR_XR_Grabbing (hand);
+		const qboolean rising = grabbing && !was_grabbing[hand];
+		was_grabbing[hand] = grabbing;
+
+		if (rising)
+		{
+			const int hotspot = XR_ComputeHotSpot (vr_xr_hand[hand].pos, vec3_origin);
+			int		  imp = 0;
+
+			switch (hotspot)
+			{
+			case QVR_HS_LEFT_HIP_HOLSTER: imp = (int)vr_holster_impulse_lefthip.value; break;
+			case QVR_HS_RIGHT_HIP_HOLSTER: imp = (int)vr_holster_impulse_righthip.value; break;
+			case QVR_HS_LEFT_UPPER_HOLSTER: imp = (int)vr_holster_impulse_leftupper.value; break;
+			case QVR_HS_RIGHT_UPPER_HOLSTER: imp = (int)vr_holster_impulse_rightupper.value; break;
+			case QVR_HS_LEFT_SHOULDER_HOLSTER: imp = (int)vr_holster_impulse_leftshoulder.value; break;
+			case QVR_HS_RIGHT_SHOULDER_HOLSTER: imp = (int)vr_holster_impulse_rightshoulder.value; break;
+			default: break;
+			}
+
+			if (imp > 0)
+			{
+				if (vr_haptics.value)
+					VR_XR_Haptic (hand, 0.05f, 200.0f, 0.5f);
+				return imp;
+			}
+		}
+	}
+
+	return 0;
+}
+
+/*
 VR_XR_Impulse
 
 Off-hand stick left/right cycles weapons. Edge triggered: one weapon per push,
@@ -4802,9 +4885,14 @@ int VR_XR_Impulse (void)
 	static qboolean armed = true;
 	const int		off_hand = VR_XR_OffHand ();
 	float			x;
+	int				holster_imp;
 
 	if (!xr_input_ready || !VR_XR_SessionRunning ())
 		return 0;
+
+	holster_imp = XR_HolsterGrabImpulse ();
+	if (holster_imp)
+		return holster_imp;
 
 	x = vr_xr_hand[off_hand].stick[0];
 
@@ -5464,6 +5552,18 @@ cvar_t vr_hip_offset_x = {"vr_hip_offset_x", "-3.5", CVAR_ARCHIVE};
 cvar_t vr_hip_offset_y = {"vr_hip_offset_y", "7.0", CVAR_ARCHIVE};
 cvar_t vr_hip_offset_z = {"vr_hip_offset_z", "0", CVAR_ARCHIVE};
 cvar_t vr_hip_holster_thresh = {"vr_hip_holster_thresh", "6.5", CVAR_ARCHIVE};
+
+// Mod-agnostic holsters: which weapon-select impulse (1-8, the same slot
+// numbers every mod's own weapon code understands) each hotspot draws. Only
+// used when the loaded progs has no VR holster fields of its own -- i.e. any
+// mod but vrqc, Arcane Dimensions included. Defaults roughly match vrqc's own
+// fresh-game loadout (axe left hip, shotgun right hip); 0 = nothing there.
+cvar_t vr_holster_impulse_lefthip = {"vr_holster_impulse_lefthip", "1", CVAR_ARCHIVE};
+cvar_t vr_holster_impulse_righthip = {"vr_holster_impulse_righthip", "2", CVAR_ARCHIVE};
+cvar_t vr_holster_impulse_leftupper = {"vr_holster_impulse_leftupper", "3", CVAR_ARCHIVE};
+cvar_t vr_holster_impulse_rightupper = {"vr_holster_impulse_rightupper", "4", CVAR_ARCHIVE};
+cvar_t vr_holster_impulse_leftshoulder = {"vr_holster_impulse_leftshoulder", "0", CVAR_ARCHIVE};
+cvar_t vr_holster_impulse_rightshoulder = {"vr_holster_impulse_rightshoulder", "0", CVAR_ARCHIVE};
 
 cvar_t vr_shoulder_holster_offset_x = {"vr_shoulder_holster_offset_x", "-0.5", CVAR_ARCHIVE};
 cvar_t vr_shoulder_holster_offset_y = {"vr_shoulder_holster_offset_y", "2.25", CVAR_ARCHIVE};
@@ -6201,7 +6301,12 @@ static void XR_SetupHolsterWeapons (void)
 	// same order as XR_SetupHolsterSlots: L hip, R hip, L upper, R upper
 	static const int field_index[4] = {2, 3, 4, 5};
 	static const int hotspots[4] = {QVR_HS_LEFT_HIP_HOLSTER, QVR_HS_RIGHT_HIP_HOLSTER, QVR_HS_LEFT_UPPER_HOLSTER, QVR_HS_RIGHT_UPPER_HOLSTER};
-	static const float pitches[4] = {-90.0f, -90.0f, -20.0f, -20.0f};
+	// Hang each holstered weapon barrel-down. Pitch is negated and applied
+	// about Y (gl_rmain.c:218), so -90 turns a model's +X barrel to point at
+	// the floor. The uppers used to sit at -20, near horizontal, which read as
+	// the weapons being at arbitrary angles next to the vertical hip pair.
+	const float pitches[4] = {
+		vr_holster_wpn_pitch_hip.value, vr_holster_wpn_pitch_hip.value, vr_holster_wpn_pitch_upper.value, vr_holster_wpn_pitch_upper.value};
 	static const float yaws[4] = {10.0f, -10.0f, 180.0f, 180.0f};
 
 	qcvm_t						*old_vm = qcvm;

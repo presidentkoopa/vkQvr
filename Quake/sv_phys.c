@@ -2169,9 +2169,71 @@ static void SV_Physics_Toss (edict_t *ent)
 	if (!SV_RunThink (ent))
 		return;
 
-	// if onground, return without moving
+	// If on the ground, vanilla returns here and the entity never moves again
+	// until something else clears FL_ONGROUND. That is fine for a grenade that
+	// has come to rest, but it makes it impossible to launch a resting object
+	// from QuakeC by assigning a velocity -- which is exactly what VR force
+	// grab does. It picks items *because* they are settled on the floor, sets
+	// a velocity toward the hand, and vanilla physics then refuses to move
+	// them, so the grab plays its sound and does nothing.
+	//
+	// quakevr replaces the early-out with a real test (sv_phys.cpp:1500-1548):
+	// trace where the entity would actually go this frame, and if nothing
+	// catches it, drop FL_ONGROUND and let the normal movement code below run.
+	// Objects still at rest trace straight into the floor and return here as
+	// before, so settled-grenade behaviour is unchanged.
 	if (((int)ent->v.flags & FL_ONGROUND))
-		return;
+	{
+		vec3_t	 move, bottom;
+		qboolean caught = false;
+		float	 vz = ent->v.velocity[2];
+
+		if (ent->v.movetype != MOVETYPE_FLY && ent->v.movetype != MOVETYPE_FLYMISSILE)
+			vz -= host_frametime * sv_gravity.value * SV_EntGravity (ent);
+
+		move[0] = ent->v.velocity[0] * host_frametime;
+		move[1] = ent->v.velocity[1] * host_frametime;
+		move[2] = vz * host_frametime;
+
+		// Test each lower corner of the box, not just the centre: an object on
+		// a ledge is still supported if any corner is.
+		VectorCopy (ent->v.origin, bottom);
+		bottom[2] += ent->v.mins[2];
+
+		if (ent->v.mins[0] == 0 && ent->v.maxs[0] == 0 && ent->v.mins[1] == 0 && ent->v.maxs[1] == 0)
+		{
+			vec3_t	dest;
+			trace_t tr;
+			VectorAdd (bottom, move, dest);
+			tr = SV_Move (bottom, vec3_origin, vec3_origin, dest, MOVE_NOMONSTERS, ent);
+			caught = (tr.fraction < 1.0f) && (tr.plane.normal[2] > 0.7f);
+		}
+		else
+		{
+			const float xs[2] = {ent->v.mins[0], ent->v.maxs[0]};
+			const float ys[2] = {ent->v.mins[1], ent->v.maxs[1]};
+			int			cx, cy;
+			for (cx = 0; cx < 2 && !caught; cx++)
+			{
+				for (cy = 0; cy < 2 && !caught; cy++)
+				{
+					vec3_t	corner, dest;
+					trace_t tr;
+					VectorCopy (bottom, corner);
+					corner[0] += xs[cx];
+					corner[1] += ys[cy];
+					VectorAdd (corner, move, dest);
+					tr = SV_Move (corner, vec3_origin, vec3_origin, dest, MOVE_NOMONSTERS, ent);
+					caught = (tr.fraction < 1.0f) && (tr.plane.normal[2] > 0.7f);
+				}
+			}
+		}
+
+		if (caught)
+			return; // genuinely still resting on something
+
+		ent->v.flags = (int)ent->v.flags & ~FL_ONGROUND;
+	}
 
 	SV_CheckVelocity (ent);
 
