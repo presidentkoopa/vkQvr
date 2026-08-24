@@ -6081,23 +6081,26 @@ static void PF_vr_cvar_hmake (void)
 	if (!var)
 	{
 		Con_Printf ("Attempted to make handle for invalid CVar '%s'\n", name);
-		G_INT (OFS_RETURN) = -1;
+		G_FLOAT (OFS_RETURN) = -1.0f;
 		return;
 	}
 	if (vr_num_cvar_handles >= VR_MAX_CVAR_HANDLES)
 	{
 		Con_Printf ("Out of cvar handles\n");
-		G_INT (OFS_RETURN) = -1;
+		G_FLOAT (OFS_RETURN) = -1.0f;
 		return;
 	}
 
 	vr_cvar_handles[vr_num_cvar_handles] = var;
-	G_INT (OFS_RETURN) = vr_num_cvar_handles++;
+	// G_FLOAT, not G_INT: the QuakeC declares these as float(string) and
+	// float(float) (builtins.qc:136-137), so the handle travels through a float
+	// slot rather than as raw integer bits.
+	G_FLOAT (OFS_RETURN) = (float)vr_num_cvar_handles++;
 }
 
 static void PF_vr_cvar_hget (void)
 {
-	const int h = G_INT (OFS_PARM0);
+	const int h = (int)G_FLOAT (OFS_PARM0);
 	if (h < 0 || h >= vr_num_cvar_handles)
 	{
 		G_FLOAT (OFS_RETURN) = 0;
@@ -6108,7 +6111,7 @@ static void PF_vr_cvar_hget (void)
 
 static void PF_vr_cvar_hset (void)
 {
-	const int h = G_INT (OFS_PARM0);
+	const int h = (int)G_FLOAT (OFS_PARM0);
 	if (h < 0 || h >= vr_num_cvar_handles)
 		return;
 	Cvar_SetValueQuick (vr_cvar_handles[h], G_FLOAT (OFS_PARM1));
@@ -6415,9 +6418,28 @@ static void PF_vr_particle2 (void)
 	SV_StartParticle (org, dir, 0, (int)G_FLOAT (OFS_PARM3));
 }
 
+// Writes a vector as three coords, which is exactly what the client reads back
+// for the temp entities the VR QuakeC sends (cl_tent.c: three MSG_ReadCoord
+// calls per effect).
+//
+// This was a stub that wrote nothing, while the QC used it for the position of
+// every gunshot, spike and explosion effect. The client was told an effect
+// followed, then read three coords that were never sent, so it consumed the
+// next messages as coordinates and died with "Illegible server message" the
+// first time anything was shot.
+//
+// sv.protocolflags, matching PF_sv_WriteCoord (pr_cmds.c:1621), so the coord
+// width agrees with what the client decodes.
 static void PF_vr_WriteVec3 (void)
 {
-	G_FLOAT (OFS_RETURN) = 0; // network writes for VR state are not wired up yet
+	sizebuf_t  *dest = WriteDest ();
+	const float x = G_VECTOR (OFS_PARM1)[0];
+	const float y = G_VECTOR (OFS_PARM1)[1];
+	const float z = G_VECTOR (OFS_PARM1)[2];
+
+	MSG_WriteCoord (dest, x, sv.protocolflags);
+	MSG_WriteCoord (dest, y, sv.protocolflags);
+	MSG_WriteCoord (dest, z, sv.protocolflags);
 }
 
 static void PF_checkbuiltin (void)
@@ -6478,30 +6500,51 @@ void PF_Fixme (void)
 		const char	*funcname = PR_GetString (fnc->s_name);
 		int			 binum = -fnc->first_statement;
 		unsigned int i;
+		int			 pass;
 		if (binum >= 0)
 		{
-			// find an extension with the matching number
-			for (i = 0; i < countof (extensionbuiltins); i++)
+			// Find an extension with the matching number.
+			//
+			// Two passes, name first. Builtin numbers are not unique in this
+			// table -- the VR extensions reuse numbers that DarkPlaces/FTE
+			// builtins already occupy -- so matching on number alone hands the
+			// call to whichever entry happens to be listed first. That is how
+			// WriteVec3 (#95) ended up executing max() (#95, listed earlier):
+			// the QuakeC asked for a network write and got an arithmetic
+			// function, so every gunshot effect wrote its two header bytes and
+			// no coordinates, desyncing the client on the first shot.
+			//
+			// The QuakeC's own function name disambiguates it exactly, so
+			// prefer a number+name match and only fall back to number-only,
+			// which preserves the old behaviour for mods that alias a builtin
+			// under a different name.
+			for (pass = 0; pass < 2; pass++)
 			{
-				int num = extensionbuiltins[i].number;
-				if (num == binum)
-				{ // set it up so we're faster next time
-					builtin_t bi = NULL;
-					if (qcvm == &sv.qcvm)
-						bi = extensionbuiltins[i].ssqcfunc;
-					else if (qcvm == &cl.qcvm)
-						bi = extensionbuiltins[i].csqcfunc;
-					if (!bi)
+				for (i = 0; i < countof (extensionbuiltins); i++)
+				{
+					int num = extensionbuiltins[i].number;
+					if (num != binum)
 						continue;
+					if (pass == 0 && strcmp (extensionbuiltins[i].name, funcname))
+						continue;
+					{
+						builtin_t bi = NULL;
+						if (qcvm == &sv.qcvm)
+							bi = extensionbuiltins[i].ssqcfunc;
+						else if (qcvm == &cl.qcvm)
+							bi = extensionbuiltins[i].csqcfunc;
+						if (!bi)
+							continue;
 
-					num = extensionbuiltins[i].documentednumber;
-					if (!pr_checkextension.value || (extensionbuiltins[i].desc && !strncmp (extensionbuiltins[i].desc, "stub.", 5)))
-						Con_Warning ("Mod is using builtin #%u - %s\n", num, extensionbuiltins[i].name);
-					else
-						Con_DPrintf2 ("Mod uses builtin #%u - %s\n", num, extensionbuiltins[i].name);
-					qcvm->builtins[binum] = bi;
-					qcvm->builtins[binum]();
-					return;
+						num = extensionbuiltins[i].documentednumber;
+						if (!pr_checkextension.value || (extensionbuiltins[i].desc && !strncmp (extensionbuiltins[i].desc, "stub.", 5)))
+							Con_Warning ("Mod is using builtin #%u - %s\n", num, extensionbuiltins[i].name);
+						else
+							Con_DPrintf2 ("Mod uses builtin #%u - %s\n", num, extensionbuiltins[i].name);
+						qcvm->builtins[binum] = bi;
+						qcvm->builtins[binum]();
+						return;
+					}
 				}
 			}
 

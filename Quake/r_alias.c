@@ -138,12 +138,20 @@ static void GL_DrawAliasFrame (
 			vulkan_globals.alias_wboit_pipelines[pipeline_index], vulkan_globals.alias_mboit_moment_pipelines[pipeline_index],
 			vulkan_globals.alias_mboit_composite_pipelines[pipeline_index]);
 
-	// VR: a mirrored model reverses winding, so it needs the no-cull variant.
-	// Only the plain opaque standard-pass case is covered, which is what the
-	// hands are; anything else falls through and simply draws unmirrored rather
+	// VR: a mirrored model reverses winding, so it needs a front-face-flipped
+	// variant. Only the plain opaque standard-pass case is covered, alpha-tested
+	// or not -- which is what the hands are, holey palm included; anything else
+	// falls through and simply draws unmirrored rather than drawing wrong.
+	// VR: a mirrored model reverses winding, so it needs a front-face-flipped
+	// variant. Covers the opaque and alpha-tested cases -- which is what the
+	// hands are, holey palm included -- in whichever main-pass variant is
+	// active. The OIT accumulation passes only ever see alpha-blended geometry,
+	// which the hands are not, so they fall through and draw unmirrored rather
 	// than drawing wrong.
-	if (e->horizFlip && pipeline_index == 0 && cbx->render_pass_index == 0)
-		pipeline = vulkan_globals.alias_mirror_pipeline;
+	if (e->horizFlip && (pipeline_index == 0 || pipeline_index == MODEL_PIPELINE_ALPHA_TEST_BIT) &&
+		(cbx->render_pass_index == RENDER_PASS_INDEX_MAIN || cbx->render_pass_index == RENDER_PASS_INDEX_MAIN_OIT ||
+		 cbx->render_pass_index == RENDER_PASS_INDEX_MAIN_MBOIT))
+		pipeline = vulkan_globals.alias_mirror_pipelines[R_MainPassPipelineVariant (cbx->render_pass_index)][pipeline_index];
 
 	R_BindPipeline (cbx, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
 
@@ -555,7 +563,9 @@ void R_DrawAliasModel (cb_context_t *cbx, entity_t *e, int *aliaspolys)
 	}
 
 	float translation_matrix[16];
-	TranslationMatrix (translation_matrix, paliashdr->scale_origin[0], paliashdr->scale_origin[1] * fovscale, paliashdr->scale_origin[2] * fovscale);
+	// VR: a holstered weapon uses the variant without the in-hand offset.
+	const float *so = e->vr_holstered ? paliashdr->holster_scale_origin : paliashdr->scale_origin;
+	TranslationMatrix (translation_matrix, so[0], so[1] * fovscale, so[2] * fovscale);
 	MatrixMultiply (model_matrix, translation_matrix);
 
 	float scale_matrix[16];
@@ -695,7 +705,9 @@ void R_DrawAliasModel_ShowTris (cb_context_t *cbx, entity_t *e)
 	}
 
 	float translation_matrix[16];
-	TranslationMatrix (translation_matrix, paliashdr->scale_origin[0], paliashdr->scale_origin[1] * fovscale, paliashdr->scale_origin[2] * fovscale);
+	// VR: a holstered weapon uses the variant without the in-hand offset.
+	const float *so = e->vr_holstered ? paliashdr->holster_scale_origin : paliashdr->scale_origin;
+	TranslationMatrix (translation_matrix, so[0], so[1] * fovscale, so[2] * fovscale);
 	MatrixMultiply (model_matrix, translation_matrix);
 
 	float scale_matrix[16];
@@ -756,7 +768,9 @@ void R_DrawAliasModel_ShowSkel (cb_context_t *cbx, entity_t *e)
 	}
 
 	float translation_matrix[16];
-	TranslationMatrix (translation_matrix, paliashdr->scale_origin[0], paliashdr->scale_origin[1] * fovscale, paliashdr->scale_origin[2] * fovscale);
+	// VR: a holstered weapon uses the variant without the in-hand offset.
+	const float *so = e->vr_holstered ? paliashdr->holster_scale_origin : paliashdr->scale_origin;
+	TranslationMatrix (translation_matrix, so[0], so[1] * fovscale, so[2] * fovscale);
 	MatrixMultiply (model_matrix, translation_matrix);
 
 	float scale_matrix[16];

@@ -139,6 +139,7 @@ void CL_ParseTEnt (void)
 	int		  colorStart, colorLength;
 
 	type = MSG_ReadByte ();
+
 	switch (type)
 	{
 	case TE_WIZSPIKE: // spike hitting wall

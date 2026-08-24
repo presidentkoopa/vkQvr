@@ -1848,6 +1848,30 @@ void CL_ParseServerMessage (void)
 		switch (cmd)
 		{
 		default:
+			// Dump the bytes around the failure before dying. A protocol
+			// desync is otherwise almost impossible to attribute -- the error
+			// names the message that parsed *successfully* before it, not the
+			// one that wrote the wrong number of bytes. Runs only on the way
+			// to Host_Error, so it costs nothing in a healthy session.
+			{
+				int start = msg_readcount - 48;
+				int end = msg_readcount + 16;
+				int dj;
+				char line[512];
+				int	 n = 0;
+				if (start < 0)
+					start = 0;
+				if (end > net_message.cursize)
+					end = net_message.cursize;
+				Con_SafePrintf ("VR: desync at @%d of %d, bytes @%d..@%d:\n", msg_readcount - 1, net_message.cursize, start, end);
+				for (dj = start; dj < end; dj++)
+				{
+					n += q_snprintf (line + n, sizeof (line) - n, "%s%02x", (dj == msg_readcount - 1) ? ">" : " ", net_message.data[dj]);
+					if (n > (int)sizeof (line) - 8)
+						break;
+				}
+				Con_SafePrintf ("%s\n", line);
+			}
 			Host_Error ("Illegible server message %d, previous was %s", cmd, svc_strings[lastcmd]); // johnfitz -- added svc_strings[lastcmd]
 			break;
 

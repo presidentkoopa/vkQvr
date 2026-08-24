@@ -168,6 +168,13 @@ cvar_t vr_grip_vertex = {"vr_grip_vertex", "-1", CVAR_ARCHIVE};
 // scale. 0 disables, leaving unknown weapons at full viewmodel size.
 cvar_t vr_wpn_autoscale = {"vr_wpn_autoscale", "26", CVAR_ARCHIVE};
 
+// Fine adjustment for a holstered weapon, in model axes: x forward, y right,
+// z up, relative to the centred position. Tuning knobs, zero by default.
+cvar_t		 vr_holster_wpn_ofs_x = {"vr_holster_wpn_ofs_x", "0", CVAR_ARCHIVE};
+cvar_t		 vr_holster_wpn_ofs_y = {"vr_holster_wpn_ofs_y", "0", CVAR_ARCHIVE};
+cvar_t		 vr_holster_wpn_ofs_z = {"vr_holster_wpn_ofs_z", "0", CVAR_ARCHIVE};
+cvar_t *const vr_holster_wpn_ofs[3] = {&vr_holster_wpn_ofs_x, &vr_holster_wpn_ofs_y, &vr_holster_wpn_ofs_z};
+
 cvar_t vr_hand_scale = {"vr_hand_scale", "0.34", CVAR_ARCHIVE};
 cvar_t vr_hand_pitch = {"vr_hand_pitch", "-8.5", CVAR_ARCHIVE};
 // vr_wofs_yaw_17 and vr_wofs_roll_17 are both 0 in the shipped config, but
@@ -641,6 +648,9 @@ void VR_XR_Init (void)
 	Cvar_RegisterVariable (&vr_hand_grips_weapon);
 	Cvar_RegisterVariable (&vr_grip_vertex);
 	Cvar_RegisterVariable (&vr_wpn_autoscale);
+	Cvar_RegisterVariable (&vr_holster_wpn_ofs_x);
+	Cvar_RegisterVariable (&vr_holster_wpn_ofs_y);
+	Cvar_RegisterVariable (&vr_holster_wpn_ofs_z);
 	Cvar_RegisterVariable (&vr_hand_scale);
 	Cvar_RegisterVariable (&vr_hand_pitch);
 	Cvar_RegisterVariable (&vr_hand_yaw);
@@ -1184,7 +1194,14 @@ into an sRGB target makes the blit re-encode it a second time, which lifts the
 blacks and washes the whole image out. Matching UNORM keeps the copy a copy.
 ===============
 */
-static int64_t XR_ChooseSwapchainFormat (void)
+// Every format the runtime supports, best first: our preferences in order,
+// then whatever else it offers. Creation is attempted down this list rather
+// than committing to one, because a runtime can advertise a format and still
+// refuse to create a swapchain with it -- VirtualDesktopXR returns a bare
+// XR_ERROR_RUNTIME_FAILURE when that happens, and giving up on the first
+// candidate drops the user into flat mode with a working headset attached.
+// Returns the count, and fills *out with a Mem_Alloc'd array the caller frees.
+static uint32_t XR_SwapchainFormatCandidates (int64_t **out)
 {
 	static const int64_t preferred[] = {
 		VK_FORMAT_B8G8R8A8_UNORM, // what the window swapchain picks first
@@ -1192,10 +1209,11 @@ static int64_t XR_ChooseSwapchainFormat (void)
 		VK_FORMAT_B8G8R8A8_SRGB,
 		VK_FORMAT_R8G8B8A8_SRGB,
 	};
-	uint32_t count = 0;
-	int64_t *formats;
-	int64_t	 chosen = 0;
+	uint32_t count = 0, n = 0;
+	int64_t *formats, *ordered;
 	uint32_t i, j;
+
+	*out = NULL;
 
 	if (XR_FAILED (xrEnumerateSwapchainFormats (xr_session, 0, &count, NULL)) || count == 0)
 		return 0;
@@ -1207,23 +1225,33 @@ static int64_t XR_ChooseSwapchainFormat (void)
 		return 0;
 	}
 
-	for (i = 0; i < countof (preferred) && !chosen; i++)
-	{
+	ordered = (int64_t *)Mem_Alloc (sizeof (int64_t) * count);
+
+	for (i = 0; i < countof (preferred); i++)
 		for (j = 0; j < count; j++)
-		{
 			if (formats[j] == preferred[i])
 			{
-				chosen = formats[j];
+				ordered[n++] = formats[j];
 				break;
 			}
-		}
+
+	// then everything else the runtime offers, in its own preference order
+	for (j = 0; j < count; j++)
+	{
+		qboolean already = false;
+		for (i = 0; i < n; i++)
+			if (ordered[i] == formats[j])
+			{
+				already = true;
+				break;
+			}
+		if (!already)
+			ordered[n++] = formats[j];
 	}
 
-	if (!chosen)
-		chosen = formats[0]; // the runtime lists its own preference first
-
 	Mem_Free (formats);
-	return chosen;
+	*out = ordered;
+	return n;
 }
 
 /*
@@ -1298,34 +1326,72 @@ void VR_XR_CreateSession (VkInstance instance, VkPhysicalDevice physical_device,
 			xr_view_space = XR_NULL_HANDLE;
 	}
 
-	xr_swapchain_format = XR_ChooseSwapchainFormat ();
-	if (!xr_swapchain_format)
 	{
-		Con_Warning ("OpenXR: no usable swapchain format\n");
-		VR_XR_Shutdown ();
-		return;
+		int64_t *candidates = NULL;
+		uint32_t ncandidates = XR_SwapchainFormatCandidates (&candidates);
+		uint32_t c;
+
+		if (!ncandidates)
+		{
+			Con_Warning ("OpenXR: no usable swapchain format\n");
+			VR_XR_Shutdown ();
+			return;
+		}
+
+		xr_swapchain_format = 0;
+		for (c = 0; c < ncandidates && !xr_swapchain_format; c++)
+		{
+			qboolean ok = true;
+
+			for (eye = 0; eye < VR_XR_EYES; eye++)
+				xr_swapchain[eye] = XR_NULL_HANDLE;
+
+			for (eye = 0; eye < VR_XR_EYES && ok; eye++)
+			{
+				memset (&swapchain_info, 0, sizeof (swapchain_info));
+				swapchain_info.type = XR_TYPE_SWAPCHAIN_CREATE_INFO;
+				swapchain_info.usageFlags = XR_SWAPCHAIN_USAGE_COLOR_ATTACHMENT_BIT | XR_SWAPCHAIN_USAGE_TRANSFER_DST_BIT;
+				swapchain_info.format = candidates[c];
+				swapchain_info.sampleCount = 1;
+				swapchain_info.width = vr_xr_eye_width;
+				swapchain_info.height = vr_xr_eye_height;
+				swapchain_info.faceCount = 1;
+				swapchain_info.arraySize = 1;
+				swapchain_info.mipCount = 1;
+
+				res = xrCreateSwapchain (xr_session, &swapchain_info, &xr_swapchain[eye]);
+				if (XR_FAILED (res))
+				{
+					Con_Warning (
+						"OpenXR: xrCreateSwapchain failed for eye %u, format %d (%s)%s\n", (unsigned)eye, (int)candidates[c], XR_ResultStr (res),
+						(c + 1 < ncandidates) ? " -- trying next format" : "");
+					ok = false;
+				}
+			}
+
+			if (ok)
+				xr_swapchain_format = candidates[c];
+			else
+				for (eye = 0; eye < VR_XR_EYES; eye++)
+					if (xr_swapchain[eye] != XR_NULL_HANDLE)
+					{
+						xrDestroySwapchain (xr_swapchain[eye]);
+						xr_swapchain[eye] = XR_NULL_HANDLE;
+					}
+		}
+
+		Mem_Free (candidates);
+
+		if (!xr_swapchain_format)
+		{
+			Con_Warning ("OpenXR: no swapchain format could actually be created\n");
+			VR_XR_Shutdown ();
+			return;
+		}
 	}
 
 	for (eye = 0; eye < VR_XR_EYES; eye++)
 	{
-		memset (&swapchain_info, 0, sizeof (swapchain_info));
-		swapchain_info.type = XR_TYPE_SWAPCHAIN_CREATE_INFO;
-		swapchain_info.usageFlags = XR_SWAPCHAIN_USAGE_COLOR_ATTACHMENT_BIT | XR_SWAPCHAIN_USAGE_TRANSFER_DST_BIT;
-		swapchain_info.format = xr_swapchain_format;
-		swapchain_info.sampleCount = 1;
-		swapchain_info.width = vr_xr_eye_width;
-		swapchain_info.height = vr_xr_eye_height;
-		swapchain_info.faceCount = 1;
-		swapchain_info.arraySize = 1;
-		swapchain_info.mipCount = 1;
-
-		res = xrCreateSwapchain (xr_session, &swapchain_info, &xr_swapchain[eye]);
-		if (XR_FAILED (res))
-		{
-			Con_Warning ("OpenXR: xrCreateSwapchain failed for eye %u (%s)\n", (unsigned)eye, XR_ResultStr (res));
-			VR_XR_Shutdown ();
-			return;
-		}
 
 		if (XR_FAILED (xrEnumerateSwapchainImages (xr_swapchain[eye], 0, &xr_swapchain_len[eye], NULL)))
 		{
@@ -3392,6 +3458,7 @@ void VR_XR_ApplyWeaponModelMod (aliashdr_t *hdr, const char *model_name)
 			{
 				hdr->scale[i] = hdr->original_scale[i] * k;
 				hdr->scale_origin[i] = hdr->original_scale_origin[i] * k;
+				hdr->holster_scale_origin[i] = -127.5f * hdr->scale[i] + vr_holster_wpn_ofs[i]->value;
 			}
 		}
 		else
@@ -3400,6 +3467,7 @@ void VR_XR_ApplyWeaponModelMod (aliashdr_t *hdr, const char *model_name)
 			{
 				hdr->scale[i] = hdr->original_scale[i];
 				hdr->scale_origin[i] = hdr->original_scale_origin[i];
+				hdr->holster_scale_origin[i] = -127.5f * hdr->scale[i] + vr_holster_wpn_ofs[i]->value;
 			}
 		}
 		return;
@@ -3416,6 +3484,16 @@ void VR_XR_ApplyWeaponModelMod (aliashdr_t *hdr, const char *model_name)
 	// 1.25x and 4x too large.
 	for (i = 0; i < 3; i++)
 		hdr->scale[i] = hdr->original_scale[i] * w->scale * correct;
+
+	// Holstered: the same size, but centred on the holster point instead of
+	// shoved into the hand.
+	//
+	// scale_origin is the model's bounding-box *minimum*, so using it directly
+	// hangs the whole weapon off one corner -- which put roughly half the
+	// shotgun out in front of the holster. MDL vertices span 0..255 per axis,
+	// so the box is 255*scale across and its centre sits at -127.5*scale.
+	for (i = 0; i < 3; i++)
+		hdr->holster_scale_origin[i] = -127.5f * hdr->scale[i] + vr_holster_wpn_ofs[i]->value;
 
 	// The position offset is the part that does not carry across, because it
 	// is measured in quakevr's controller frame. See the vr_wpn_offsets note.
@@ -4410,9 +4488,13 @@ void VR_XR_Move (usercmd_t *cmd)
 		mx = (fwd * lfwd[0] + side * lright[0]) * fac;
 		my = (fwd * lfwd[1] + side * lright[1]) * fac;
 
-		// into the head's yaw frame
+		// Into the head's yaw frame: the projection of (mx,my) onto the head's
+		// own forward/right vectors -- quakevr gets this via DotProduct against
+		// getAngledVectors(headYaw) (vr.cpp:4582-4586). AngleVectors' right
+		// vector at pitch=roll=0 is (sin(yaw),-cos(yaw),0) (mathlib.c:299-300),
+		// not (-sin(yaw),cos(yaw),0), so the side term is +mx*hs - my*hc.
 		f = mx * hc + my * hs;
-		s = -mx * hs + my * hc;
+		s = mx * hs - my * hc;
 
 		cmd->forwardmove += cl_forwardspeed.value * f;
 		cmd->sidemove += cl_forwardspeed.value * s;
@@ -4442,8 +4524,11 @@ void VR_XR_Move (usercmd_t *cmd)
 		const float wx = xr_roomscale_delta[0] * inv_dt;
 		const float wy = xr_roomscale_delta[1] * inv_dt;
 
+		// Same projection as the off-hand movement block above: AngleVectors'
+		// right vector at pitch=roll=0 is (sin(yaw),-cos(yaw),0), not its
+		// negation, so the side term is +wx*s - wy*c.
 		cmd->forwardmove += wx * c + wy * s;
-		cmd->sidemove += -wx * s + wy * c;
+		cmd->sidemove += wx * s - wy * c;
 	}
 
 	// The server builds its movement basis from the angles we send it, and with
@@ -4454,12 +4539,20 @@ void VR_XR_Move (usercmd_t *cmd)
 		vec3_t aim;
 		if (VR_XR_AimAngles (aim))
 		{
+			// Same (forward,right) chirality as above -- right is not forward's
+			// naive perpendicular, so re-deriving this as a plain rotation matrix
+			// flips a term. Solving W = f*fwd(head)+r*right(head) =
+			// f'*fwd(aim)+r'*right(aim) for (f',r') via the basis matrix
+			// [[cos,sin],[sin,-cos]], which is its own inverse, gives
+			// f'=f*cos(d)+r*sin(d), r'=-f*sin(d)+r*cos(d). Checked against the
+			// r=0 case (matches either sign) AND head=0/aim=90 with r=1, which
+			// only the '+' sign reproduces correctly.
 			const float delta = DEG2RAD (xr_head_yaw + cl.viewangles[YAW] - aim[YAW]);
 			const float s = sinf (delta), c = cosf (delta);
 			const float f = cmd->forwardmove, r = cmd->sidemove;
 
-			cmd->forwardmove = f * c - r * s;
-			cmd->sidemove = f * s + r * c;
+			cmd->forwardmove = f * c + r * s;
+			cmd->sidemove = -f * s + r * c;
 		}
 	}
 }
@@ -5098,6 +5191,7 @@ void VR_XR_WriteEdictFields (edict_t *ed)
 	}
 
 	XR_SetFloat (ed, f->ishuman, 1.0f);
+
 }
 
 /*
@@ -5364,7 +5458,9 @@ cvar_t vr_shoulder_offset_x = {"vr_shoulder_offset_x", "-1", CVAR_ARCHIVE};
 cvar_t vr_shoulder_offset_y = {"vr_shoulder_offset_y", "1.75", CVAR_ARCHIVE};
 cvar_t vr_shoulder_offset_z = {"vr_shoulder_offset_z", "16", CVAR_ARCHIVE};
 
-cvar_t vr_hip_offset_x = {"vr_hip_offset_x", "0.5", CVAR_ARCHIVE};
+// quakevr ships -3.5 (ReleaseFiles/Id1/config.cfg): the hips sit slightly
+// behind the body centre, not in front of it.
+cvar_t vr_hip_offset_x = {"vr_hip_offset_x", "-3.5", CVAR_ARCHIVE};
 cvar_t vr_hip_offset_y = {"vr_hip_offset_y", "7.0", CVAR_ARCHIVE};
 cvar_t vr_hip_offset_z = {"vr_hip_offset_z", "0", CVAR_ARCHIVE};
 cvar_t vr_hip_holster_thresh = {"vr_hip_holster_thresh", "6.5", CVAR_ARCHIVE};
@@ -6132,6 +6228,7 @@ static void XR_SetupHolsterWeapons (void)
 		f = &qcvm->extfields;
 		player = EDICT_NUM (cl.viewentity);
 
+
 		for (i = 0; i < 4; i++)
 		{
 			entity_t   *e = &cl.vrholsterwpn[i];
@@ -6139,6 +6236,7 @@ static void XR_SetupHolsterWeapons (void)
 			int			ofs = -1;
 			const char *name = NULL;
 			vec3_t		spot;
+
 
 			switch (fi)
 			{
@@ -6149,14 +6247,28 @@ static void XR_SetupHolsterWeapons (void)
 			}
 
 			if (ofs < 0)
+			{
 				continue;
+			}
 
-			name = PR_GetString (((string_t *)((byte *)&player->v + ofs))[0]);
+			// Field offsets from ED_FindFieldOffset are in 32-bit words, not
+			// bytes -- GetEdictFieldValue scales by 4 (pr_edict.c:415). Doing
+			// the pointer arithmetic by hand without that scale read a quarter
+			// of the way into the edict and produced garbage strings, so no
+			// holstered weapon ever drew.
+			{
+				eval_t *sval = GetEdictFieldValue (player, ofs);
+				name = sval ? PR_GetString (sval->string) : NULL;
+			}
 			if (!name || !*name || !strcmp (name, "-1"))
+			{
 				continue;
+			}
 
 			if (!VR_XR_HolsterSpot (hotspots[i], spot))
+			{
 				continue;
+			}
 
 			e->model = Mod_ForName (name, false);
 			if (!e->model || e->model->type != mod_alias)
@@ -6164,6 +6276,7 @@ static void XR_SetupHolsterWeapons (void)
 				e->model = NULL;
 				continue;
 			}
+
 
 			VectorCopy (spot, e->origin);
 			e->angles[PITCH] = pitches[i];
@@ -6174,6 +6287,10 @@ static void XR_SetupHolsterWeapons (void)
 			e->alpha = ENTALPHA_DEFAULT;
 			e->netstate.scale = ENTSCALE_DEFAULT;
 			e->horizFlip = (i == 0 || i == 2);
+			// Seat it on its own geometry: these are v_*.mdl viewmodels whose
+			// scale_origin has been rewritten to place them in the hand, which
+			// is tens of units away from where a holstered copy belongs.
+			e->vr_holstered = true;
 		}
 	}
 

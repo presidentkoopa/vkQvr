@@ -113,6 +113,7 @@ typedef struct entity_s
 	byte	  eflags; // spike -- mostly a mirror of netstate, but handles tag inheritance (eww!)
 	byte	  alpha;  // johnfitz -- alpha
 	qboolean  horizFlip;   // VR: mirror on Y, so one hand model serves both hands
+	qboolean  vr_holstered; // VR: draw a weapon model seated on itself, not in the hand
 	qboolean  alphatestonly; // VR: holes via alpha test, never blend the whole model
 	entlerp_t lerp;
 

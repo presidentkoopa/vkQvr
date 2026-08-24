@@ -60,6 +60,7 @@ double		NET_QSocketGetTime (const struct qsocket_s *sock);
 const char *NET_QSocketGetTrueAddressString (const struct qsocket_s *sock);
 const char *NET_QSocketGetMaskedAddressString (const struct qsocket_s *sock);
 qboolean	NET_QSocketGetProQuakeAngleHack (const struct qsocket_s *sock);
+qboolean	NET_QSocketIsLocal (const struct qsocket_s *sock);
 int			NET_QSocketGetSequenceIn (const struct qsocket_s *sock);
 int			NET_QSocketGetSequenceOut (const struct qsocket_s *sock);
 void		NET_QSocketSetMSS (struct qsocket_s *s, int mss);

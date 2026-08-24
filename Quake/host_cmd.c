@@ -1927,7 +1927,12 @@ static void Host_Loadgame_f (void)
 	PR_SwitchQCVM (&sv.qcvm);
 
 	if (!fastload)
+	{
+		// VR: tell the QuakeC's spawn hooks this is a restore, not a new map.
+		sv_spawn_from_savefile = true;
 		SV_SpawnServer (mapname);
+		sv_spawn_from_savefile = false;
+	}
 
 	if (!sv.active)
 	{
@@ -2149,6 +2154,12 @@ static void Host_Loadgame_f (void)
 
 	for (i = 0; i < NUM_TOTAL_SPAWN_PARMS; i++)
 		svs.clients->spawn_parms[i] = spawn_parms[i];
+
+	// VR: quakevr's third lifecycle hook (host_cmd.cpp:1770). Re-registers the
+	// VR QuakeC's cvar handles, which a savegame load would otherwise leave
+	// pointing at nothing.
+	if (qcvm->extfuncs.OnLoadGame)
+		PR_ExecuteProgram (qcvm->extfuncs.OnLoadGame);
 
 	PR_SwitchQCVM (NULL);
 

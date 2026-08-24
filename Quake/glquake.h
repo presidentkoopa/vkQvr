@@ -435,7 +435,11 @@ typedef struct
 	// face into the pipeline, so the state cannot simply be flipped mid-frame as
 	// quakevr does with glFrontFace. Culling nothing renders a closed opaque
 	// mesh identically -- the depth test already keeps the nearest surface.
-	vulkan_pipeline_t		 alias_mirror_pipeline;
+	// VR: mirrored (front-face-flipped) alias variants, for one hand model
+	// serving both hands. Indexed [main pass variant][alpha-tested], because a
+	// mirrored model can be drawn in any of the main-pass variants -- with OIT
+	// enabled the hands go through MAIN_OIT, not MAIN.
+	vulkan_pipeline_t		 alias_mirror_pipelines[MAIN_RENDER_PASS_VARIANT_COUNT][2];
 	vulkan_pipeline_t		 alias_mboit_moment_pipelines[MODEL_PIPELINE_COUNT];
 	vulkan_pipeline_t		 alias_mboit_composite_pipelines[MODEL_PIPELINE_COUNT];
 	vulkan_pipeline_t		 md5_pipelines[MAIN_RENDER_PASS_VARIANT_COUNT][MODEL_PIPELINE_COUNT];

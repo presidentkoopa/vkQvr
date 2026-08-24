@@ -3571,20 +3571,31 @@ static void R_CreateAliasPipelines ()
 	const vulkan_pipeline_layout_t layout = vulkan_globals.alias_pipelines[MAIN_RENDER_PASS_STANDARD][0].layout;
 
 	pipeline_create_infos_t infos;
-	// VR: the mirrored variant. Mirroring reverses triangle winding, so the
+	// VR: the mirrored variants. Mirroring reverses triangle winding, so the
 	// front face is declared counter-clockwise and back-face culling stays on,
-	// which is what quakevr does with glFrontFace.
+	// which is what quakevr does with glFrontFace (r_alias.cpp:1211) rather
+	// than disabling culling -- so the model reads exactly as unmirrored.
+	//
+	// Built for every main-pass variant and for both alpha-tested and not.
+	// Both axes are load-bearing: MF_HOLEY hand models route to
+	// MODEL_PIPELINE_ALPHA_TEST_BIT (see the alphatestonly comment in
+	// GL_DrawAliasFrame), and with OIT enabled the hands are drawn in the
+	// MAIN_OIT pass, not MAIN. Missing either combination meant the off hand
+	// fell back to the unmirrored pipeline's winding and culled the wrong
+	// faces -- the see-through palm.
+	for (int variant = 0; variant < MAIN_RENDER_PASS_VARIANT_COUNT; ++variant)
 	{
-		R_CopyPipelineCreateInfos (&infos, &base);
-		infos.graphics_pipeline.renderPass = vulkan_globals.main_render_pass[MAIN_RENDER_PASS_STANDARD][MAIN_RENDER_PASS_STENCIL_CLEAR];
-		infos.shader_stages[1].module = alias_frag_module;
-		infos.blend_attachment_states[0].blendEnable = VK_FALSE;
-		infos.depth_stencil_state.depthWriteEnable = VK_TRUE;
-		// quakevr flips the winding rather than disabling culling
-		// (r_alias.cpp:1211, glFrontFace(GL_CCW)), so back faces stay culled
-		// and the model reads exactly as the unmirrored one does.
-		infos.rasterization_state.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
-		R_CreateGraphicsPipeline (&vulkan_globals.alias_mirror_pipeline, &infos, layout, "alias_mirror");
+		for (int alpha_test = 0; alpha_test < 2; ++alpha_test)
+		{
+			R_CopyPipelineCreateInfos (&infos, &base);
+			infos.graphics_pipeline.renderPass = vulkan_globals.main_render_pass[variant][MAIN_RENDER_PASS_STENCIL_CLEAR];
+			infos.shader_stages[1].module = alpha_test ? alias_alphatest_frag_module : alias_frag_module;
+			infos.blend_attachment_states[0].blendEnable = VK_FALSE;
+			infos.depth_stencil_state.depthWriteEnable = VK_TRUE;
+			infos.rasterization_state.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
+			R_CreateGraphicsPipeline (
+				&vulkan_globals.alias_mirror_pipelines[variant][alpha_test], &infos, layout, va ("alias_mirror %d %d", variant, alpha_test));
+		}
 	}
 
 	for (int pipeline_index = 0; pipeline_index < MODEL_PIPELINE_SHOWTRIS; ++pipeline_index)

@@ -186,6 +186,12 @@ qboolean NET_QSocketGetProQuakeAngleHack (const qsocket_t *s)
 	else
 		return false; // happens with demos
 }
+// True for the listen server's own player, who talks to it over a loopback
+// socket. Note a NULL socket is a bot (pr_ext.c:2427), not the local player.
+qboolean NET_QSocketIsLocal (const qsocket_t *s)
+{
+	return s && IS_LOOP_DRIVER (s->driver);
+}
 void NET_QSocketSetMSS (qsocket_t *s, int mss)
 {
 	s->pending_max_datagram = mss;

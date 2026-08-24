@@ -387,5 +387,9 @@ void SV_CheckForNewClients (void);
 void SV_RunClients (void);
 void SV_SaveSpawnparms ();
 void SV_SpawnServer (const char *server);
+// VR: set by the savegame loader for the duration of one SV_SpawnServer call,
+// so the QuakeC's OnSpawnServer* hooks can tell a fresh map from a restore.
+// quakevr passes this as a SpawnServerSrc argument (sv_main.cpp:4200).
+extern qboolean sv_spawn_from_savefile;
 
 #endif /* _QUAKE_SERVER_H */

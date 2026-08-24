@@ -668,7 +668,13 @@ void SV_RunClients (void)
 		// Publish VR hand state as QuakeC fields before the game thinks, so
 		// game logic sees this frame's poses. Local client only: a remote one
 		// needs the extended clc_move, which is a protocol change.
-		if (!host_client->netconnection)
+		//
+		// The local player on a listen server owns a loopback qsocket, so it is
+		// IS_LOOP_DRIVER that identifies it -- the same test net_main.c:738
+		// uses. A NULL netconnection means a *bot* (pr_ext.c:2427), so testing
+		// for that published the VR fields to bots and never to the player,
+		// leaving every QC-side VR feature with no input at all.
+		if (NET_QSocketIsLocal (host_client->netconnection))
 			VR_XR_WriteEdictFields (sv_player);
 
 		// always pause in single player if in console or menus

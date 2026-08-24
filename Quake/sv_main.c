@@ -3293,6 +3293,8 @@ SV_SpawnServer
 This is called at the start of each level
 ================
 */
+qboolean sv_spawn_from_savefile = false;
+
 void SV_SpawnServer (const char *server)
 {
 	static char dummy[8] = {0, 0, 0, 0, 0, 0, 0, 0};
@@ -3356,7 +3358,29 @@ void SV_SpawnServer (const char *server)
 
 	PR_SwitchQCVM (vm);
 	// load progs to get entity field count
-	PR_LoadProgs ("progs.dat", true, PROGHEADER_CRC, pr_ssqcbuiltins, pr_ssqcnumbuiltins);
+	// VR: load vrprogs.dat when there is one, otherwise progs.dat as usual.
+	//
+	// The VR QuakeC cannot just be a progs.dat in the gamedir. Pak files sit
+	// ahead of loose files in the search path, so a progs.dat inside any
+	// pak0.pak shadows a loose one -- which is what was happening in vrqc: a
+	// non-VR progs inside the pak loaded instead of the VR progs sitting next
+	// to it, and every QuakeC-side VR feature (holsters, grab, melee, throw)
+	// had no code behind it at all.
+	//
+	// Giving it its own filename settles that, and it is the name VRQC's
+	// progs.src already builds.
+	{
+		// -vrprogs forces the VR QuakeC without a headset, so VR game-logic bugs
+		// can be reproduced and debugged on the desktop.
+		const qboolean want_vr_progs = vr_xr_active || COM_CheckParm ("-vrprogs");
+		qboolean	   vr_progs_loaded = want_vr_progs && PR_LoadProgs ("vrprogs.dat", false, PROGHEADER_CRC, pr_ssqcbuiltins, pr_ssqcnumbuiltins);
+		if (!vr_progs_loaded)
+			PR_LoadProgs ("progs.dat", true, PROGHEADER_CRC, pr_ssqcbuiltins, pr_ssqcnumbuiltins);
+		// One line per map load naming which QuakeC actually loaded. Cheap, and
+		// it makes the single most confusing failure mode in this port -- the
+		// VR progs silently not being the one in use -- visible immediately.
+		Con_SafePrintf ("VR: %s loaded (vr_xr_active=%d)\n", vr_progs_loaded ? "vrprogs.dat" : "progs.dat", vr_xr_active);
+	}
 
 	// allocate server memory
 	/* Host_ClearMemory() called above already cleared the whole sv structure */
@@ -3462,6 +3486,14 @@ void SV_SpawnServer (const char *server)
 	// serverflags are for cross level information (sigils)
 	pr_global_struct->serverflags = svs.serverflags;
 
+	// VR: quakevr calls this before loading entities (sv_main.cpp:4198). The VR
+	// QuakeC registers all 64 of its cvar handles here, so skipping it leaves
+	// every cvar_hget in the game code reading from an empty table.
+	if (qcvm->extglobals.spawnServerFromSaveFile)
+		*qcvm->extglobals.spawnServerFromSaveFile = sv_spawn_from_savefile ? 1.0f : 0.0f;
+	if (qcvm->extfuncs.OnSpawnServerBeforeLoad)
+		PR_ExecuteProgram (qcvm->extfuncs.OnSpawnServerBeforeLoad);
+
 	ED_LoadFromFile (qcvm->worldmodel->entities);
 
 	sv.active = true;
@@ -3491,6 +3523,13 @@ void SV_SpawnServer (const char *server)
 		if (host_client->active)
 			SV_SendServerinfo (host_client);
 	}
+
+	// VR: quakevr's second hook, after the entities exist (sv_main.cpp:4255).
+	// It re-registers the cvar handles and seeds weapons into ammo boxes.
+	if (qcvm->extglobals.spawnServerFromSaveFile)
+		*qcvm->extglobals.spawnServerFromSaveFile = sv_spawn_from_savefile ? 1.0f : 0.0f;
+	if (qcvm->extfuncs.OnSpawnServerAfterLoad)
+		PR_ExecuteProgram (qcvm->extfuncs.OnSpawnServerAfterLoad);
 
 	Con_DPrintf ("Server spawned.\n");
 

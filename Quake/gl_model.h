@@ -364,6 +364,11 @@ typedef struct aliashdr_s
 	// (quakevr gl_model.cpp:4155-4156)
 	vec3_t				original_scale;
 	vec3_t				original_scale_origin;
+	// scale_origin without the in-hand placement offset, for drawing the same
+	// weapon model somewhere that is not the hand -- a holster. The hand offset
+	// is tens of units for some weapons (v_axe is 24 up and 37 forward), so a
+	// holstered weapon drawn with it lands well away from the body.
+	vec3_t				holster_scale_origin;
 	float				boundingradius;
 	vec3_t				eyeposition;
 	int					numskins;

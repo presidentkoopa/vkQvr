@@ -230,6 +230,15 @@ struct pr_extfuncs_s
 #define QCEXTFUNCS_SV                                     \
 	QCEXTFUNC (SV_ParseClientCommand, "void(string cmd)") \
 	QCEXTFUNC (SV_RunClientCommand, "void()")             \
+	/* VR: quakevr's server lifecycle hooks. It declares these in its own    \
+	   globalvars_t and calls them from sv_main.cpp:4198/4255 and            \
+	   host_cmd.cpp:1770. Resolved by name here instead, so PROGHEADER_CRC   \
+	   stays 5927 and mods without them are unaffected. The VR QuakeC does   \
+	   all of its cvar-handle registration inside these -- without them,     \
+	   every cvar_hget in the VR game code answers from an empty table. */   \
+	QCEXTFUNC (OnSpawnServerBeforeLoad, "void()")         \
+	QCEXTFUNC (OnSpawnServerAfterLoad, "void()")          \
+	QCEXTFUNC (OnLoadGame, "void()")                      \
 /*csqc*/
 #define QCEXTFUNCS_CS                                                                                                                     \
 	QCEXTFUNC (CSQC_Init, "void(float apilevel, string enginename, float engineversion)")                                                 \
@@ -270,6 +279,9 @@ struct pr_extglobals_s
 	QCEXTGLOBAL_VECTOR (input_cursor_trace_endpos) \
 	QCEXTGLOBAL_FLOAT (input_cursor_entitynumber)  \
 	QCEXTGLOBAL_FLOAT (physics_mode)               \
+	/* VR: quakevr sets this alongside its OnSpawnServer* hooks so the QuakeC \
+	   can tell a fresh map from a savegame load (sv_main.cpp:4200). */       \
+	QCEXTGLOBAL_FLOAT (spawnServerFromSaveFile)    \
 	// end
 #define QCEXTGLOBALS_CSQC                  \
 	QCEXTGLOBAL_FLOAT (cltime)             \
